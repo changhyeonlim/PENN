@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).resolve().parent[2] / ".env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 LOCAL_TZ = ZoneInfo("America/New_York")
 
 # H3 resolution 9 cells are roughly 0.1 km2: about one city block group.

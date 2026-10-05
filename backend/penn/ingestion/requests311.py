@@ -34,10 +34,14 @@ def fetch_year(year: int, client: httpx.Client | None = None) -> Iterator[dict]:
     own = client is None
     client = client or httpx.Client(timeout=120)
     try:
-        q = build_query(f"{year}-01-01", f"{year + 1}-01-01")
-        r = client.get(CARTO_SQL_URL, params={"q": q, "format": "json"})
-        r.raise_for_status()
-        yield from r.json().get("rows", [])
+        for month in range(1, 13):
+            start = f"{year}-{month:02d}-01"
+            end = f"{year + 1}-01-01" if month == 12 else f"{year}-{month + 1:02d}-01"
+            r = client.get(CARTO_SQL_URL, params={"q": build_query(start, end), "format": "json"})
+            r.raise_for_status()
+            rows = r.json().get("rows", [])
+            print(f" {start[:7]}: {len(rows)} rows")
+            yield from rows
     finally:
         if own:
             client.close()
@@ -51,9 +55,9 @@ def _ts(v: str | None) -> datetime | None:
 
 
 def normalize(row: dict, category: str = "") -> NormalizedEvent | None:
-    lat, lon = row.get("lat"), row.get("lon")
-    if lat is None or lon is None:
+    if row.get("lat") is None or row.get("lon") is None:
         return None
+    lat, lon = float(row["lat"]), float(row["lon"])
     return NormalizedEvent(
         source=SOURCE,
         source_record_id=str(row["service_request_id"]),
