@@ -1,0 +1,22 @@
+[project]
+name = "penn"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "httpx>=0.27",
+  "clickhouse-connect>=0.7",
+  "h3>=4.0",
+  "openai>=1.30",
+  "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "chdb>=2.0"]
+
+[tool.setuptools.packages.find]
+include = ["penn*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
