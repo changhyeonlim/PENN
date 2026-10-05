@@ -87,7 +87,7 @@ def resolve_window(text: str, now: datetime | None = None) -> Window | None:
         days_to_sat = (5 - now.weekday()) % 7
         sat = now.date() + timedelta(days=days_to_sat)
         start = datetime.combine(sat, time.min, LOCAL_TZ)
-        return Window(start, start + timedelta(days=2), f"the weekend of {sat:%b %-d}")
+        return Window(start, start + timedelta(days=2), f"the weekend of {sat:%b} {sat.day}")
 
     if "tomorrow" in t:
         d = now.date() + timedelta(days=1)
@@ -102,5 +102,5 @@ def resolve_window(text: str, now: datetime | None = None) -> Window | None:
     if d is None:
         return None
     s, e = _day_window(d, part)
-    label = f"{d:%A %b %-d}" + (f" {part}" if part else "")
+    label = f"{d:%A %b} {d.day}" + (f" {part}" if part else "")
     return Window(s, e, label)
