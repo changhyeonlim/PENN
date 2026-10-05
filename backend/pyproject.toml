@@ -10,10 +10,13 @@ dependencies = [
   "h3>=4.0",
   "openai>=1.30",
   "pydantic>=2.6",
+  "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "chdb>=2.0"]
+dev = ["pytest>=8"]
+# Embedded ClickHouse for tests/test_tools_sql.py. Linux and macOS only; the test skips without it.
+sqltest = ["chdb; sys_platform != 'win32'"]
 
 [tool.setuptools.packages.find]
 include = ["penn*"]
