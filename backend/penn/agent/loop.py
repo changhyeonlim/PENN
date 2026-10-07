@@ -22,10 +22,14 @@ The loop you are building, in plain terms:
 4. Record one entry per model call (model, reason, latency, tokens) in `calls`.
 """
 from __future__ import annotations
-
+from openai import OpenAI
 from dataclasses import dataclass, field
-
+import json
+from penn.config import settings
+from penn.tools import TOOL_SCHEMAS, TOOLS
 from .router import Route
+import time
+from . import citations
 
 SYSTEM = """You are PENN, a guide to street activity in Center City, Philadelphia.
 Rules:
@@ -56,4 +60,57 @@ class Answer:
 def ask(question: str, cells: list[int], start: str, end: str, place_label: str, window_label: str,
         client=None) -> Answer:
     """Run one Ask PENN turn and return a cited answer."""
-    raise NotImplementedError("Steps 1-3 and 5 in docs/LEARNING.md")
+    client = client or OpenAI(base_url=settings.token_factory_base_url, api_key=settings.token_factory_api_key)
+    route = Route(settings.model_super, "super", "fixed until the router exists")
+    context = json.dumps({"cells": cells, "start": start, "end": end, "place": place_label, "window": window_label})
+    messages = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": f"{question}\n\nResolved context: {context}"},
+    ]
+    def invoke(messages):
+        resp = client.chat.completions.create(
+            model=route.model,
+            messages=messages,
+            tools=TOOL_SCHEMAS
+        )
+        return resp
+    tools_called, calls = [], []
+    returned_ids = set()
+    retried = False
+    for _ in range(MAX_STEPS):
+        t0 = time.monotonic()
+        resp = invoke(messages)
+        calls.append({
+            "model": route.model,
+            "reason": route.reason,
+            "latency_ms": int((time.monotonic() - t0) * 1000),
+            "prompt_tokens": resp.usage.prompt_tokens,
+            "output_tokens": resp.usage.completion_tokens
+        })
+        msg = resp.choices[0].message
+
+        if msg.tool_calls:
+            messages.append(msg.model_dump(exclude_none=True))
+              
+            for tc in msg.tool_calls:
+              args = json.loads(tc.function.arguments)
+              result = TOOLS[tc.function.name](**args)
+              returned_ids = citations.collect_ids(result)
+              tools_called.append(tc.function.name)
+              messages.append({
+                  "role": "tool",
+                  "tool_call_id": tc.id,
+                  "content": json.dumps(result, default=str)
+              })
+            continue
+        chk = citations.check(msg.content or "", returned_ids)
+        if chk.ok:
+            return Answer(msg.content, route, tools_called, sorted(chk.cited), "", calls)
+        if retried:
+            break                                    # second bad answer: give up
+        retried = True
+        messages.append({"role": "assistant", "content": msg.content})
+        messages.append({"role": "user",
+                        "content": f"Citation check failed: {chk.reason}. Rewrite using only IDs the tools returned."})
+
+    return Answer(GIVE_UP, route, tools_called, [], "", calls)

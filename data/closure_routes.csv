@@ -1,0 +1,6 @@
+closure_id,leg,street,from_street,to_street,note
+broad-street-run-2026-05-03-709df3f8,1,North Broad Street,Erie Avenue,John F. Kennedy Boulevard,"Course supplied by the PENN team: south on Broad Street, counterclockwise around City Hall, finish near Farragut Avenue in the Navy Yard. Farragut Avenue is not in the City centerline; the route ends at Constitution Avenue, the nearest cross street. The centerline has no road on City Hall's west face, so the City Hall leg follows 15th Street."
+broad-street-run-2026-05-03-709df3f8,2,John F. Kennedy Boulevard,North Broad Street,15th Street,
+broad-street-run-2026-05-03-709df3f8,3,15th Street,John F. Kennedy Boulevard,South Penn Square,
+broad-street-run-2026-05-03-709df3f8,4,South Penn Square,15th Street,South Broad Street,
+broad-street-run-2026-05-03-709df3f8,5,South Broad Street,South Penn Square,Constitution Avenue,

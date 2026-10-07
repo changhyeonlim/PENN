@@ -6,3 +6,6 @@ node_modules/
 .next/
 eval/results/
 *.egg-info/
+
+# Street centerline (33 MB); geocode_closures downloads it when missing
+data/centerline/
