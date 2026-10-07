@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import json
 from penn.config import settings
 from penn.tools import TOOL_SCHEMAS, TOOLS
-from .router import Route
+from .router import Route, route_question, maybe_escalate
 import time
 from . import citations
 
@@ -61,7 +61,7 @@ def ask(question: str, cells: list[int], start: str, end: str, place_label: str,
         client=None) -> Answer:
     """Run one Ask PENN turn and return a cited answer."""
     client = client or OpenAI(base_url=settings.token_factory_base_url, api_key=settings.token_factory_api_key)
-    route = Route(settings.model_super, "super", "fixed until the router exists")
+    route = route_question(question)
     context = json.dumps({"cells": cells, "start": start, "end": end, "place": place_label, "window": window_label})
     messages = [
         {"role": "system", "content": SYSTEM},
@@ -93,15 +93,16 @@ def ask(question: str, cells: list[int], start: str, end: str, place_label: str,
             messages.append(msg.model_dump(exclude_none=True))
               
             for tc in msg.tool_calls:
-              args = json.loads(tc.function.arguments)
-              result = TOOLS[tc.function.name](**args)
-              returned_ids = citations.collect_ids(result)
-              tools_called.append(tc.function.name)
-              messages.append({
-                  "role": "tool",
-                  "tool_call_id": tc.id,
-                  "content": json.dumps(result, default=str)
-              })
+                args = json.loads(tc.function.arguments)
+                result = TOOLS[tc.function.name](**args)
+                returned_ids |= citations.collect_ids(result)
+                tools_called.append(tc.function.name)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result, default=str)
+                })
+            route = maybe_escalate(route, len(tools_called))
             continue
         chk = citations.check(msg.content or "", returned_ids)
         if chk.ok:

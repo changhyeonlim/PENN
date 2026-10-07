@@ -17,7 +17,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..config import settings  # settings.model_nano / model_super / model_ultra
-
+import re
+ULTRA_PATTERNS = [
+    re.compile(r"\bwhy\b", re.IGNORECASE),
+    re.compile(r"\bbefore\b", re.IGNORECASE),
+    re.compile(r"\bhas (this|that|it) happened\b", re.IGNORECASE),
+    re.compile(r"\bcompar(e|ed|ison)\b", re.IGNORECASE),
+    re.compile(r"\busually\b", re.IGNORECASE),
+    re.compile(r"\bthan (last|usual)\b", re.IGNORECASE)
+]
 MAX_TOOLS_BEFORE_ESCALATE = 2
 
 
@@ -35,14 +43,20 @@ def route_question(question: str) -> Route:
     comparison or explanation. Return Ultra with a reason naming the pattern,
     otherwise Super.
     """
-    raise NotImplementedError("Step 4 in docs/LEARNING.md")
-
+    for pattern in ULTRA_PATTERNS:
+        m = pattern.search(question)
+        if m:
+            return Route(settings.model_ultra, "ultra", f"Found keyword <{m.group(0)}> and changing to Ultra")
+    return(Route(settings.model_super, tier="super", reason="No keywords matching for Ultra"))
 
 def maybe_escalate(current: Route, tool_calls_so_far: int) -> Route:
     """Move a Super turn to Ultra once it has needed more than two tool calls."""
-    raise NotImplementedError("Step 4 in docs/LEARNING.md")
+    if tool_calls_so_far > MAX_TOOLS_BEFORE_ESCALATE and current.tier == 'super':
+        return Route(settings.model_ultra, "ultra", f"Tool calling exceeded: # of tool calls [{tool_calls_so_far}]")
+    else:
+        return current
 
 
 def classification_route() -> Route:
     """The route for bulk classification jobs (Nano)."""
-    raise NotImplementedError("Step 4 in docs/LEARNING.md")
+    return Route(settings.model_nano, tier="nano", reason="classification job")
