@@ -26,10 +26,28 @@ from penn.config import LOCAL_TZ  # noqa: E402
 from penn.ingestion import lane_closures  # noqa: E402
 
 SNAPSHOT_DIR = ROOT / "data" / "snapshots"
+# Refuse a snapshot under half the previous day's rows. Daily churn is ~1-2%, so a drop
+# this large means a broken fetch or a half-published layer, not real change.
+MIN_SHARE = 0.5
+
+
+class SuspiciousSnapshot(RuntimeError):
+    pass
+
+
+def _previous_rows(snapshot_date: date) -> int | None:
+    earlier = [p for p in sorted(SNAPSHOT_DIR.glob("*.geojson.gz")) if p.name < f"{snapshot_date.isoformat()}"]
+    if not earlier:
+        return None
+    with gzip.open(earlier[-1], "rt", encoding="utf-8") as f:
+        return len(json.load(f)["features"])
 
 
 def save_snapshot(snapshot_date: date) -> Path:
     features = list(lane_closures.fetch_features())
+    prev = _previous_rows(snapshot_date)
+    if prev and len(features) < MIN_SHARE * prev:
+        raise SuspiciousSnapshot(f"{len(features)} features vs {prev} in the previous snapshot; not saved")
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = SNAPSHOT_DIR / f"{snapshot_date.isoformat()}.geojson.gz"
     collection = {"type": "FeatureCollection", "features": features}
