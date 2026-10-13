@@ -9,8 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-CITE = re.compile(r"\[id:([A-Za-z0-9_:\-\.]+)\]")
-
+CITE = re.compile(r"[\[【]\s*id:\s*([A-Za-z0-9_:\-\.]+)\s*[\]】]")
 
 def collect_ids(obj) -> set[str]:
     """Walk a tool result and gather every event_id it contains."""

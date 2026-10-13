@@ -41,6 +41,8 @@ Rules:
 - Parking: you only know Temporary No Parking and Temporary Loading Zone permits.
   Say that regular sign rules are not in PENN's data.
 - If the tools return nothing relevant, say PENN has no record of it.
+- If open_ended is true, say the permit has no end date listed and may not be active; never present it as ongoing work.
+- claim_certainty "planned" is a city plan with no dates; never present it as scheduled work.
 The resolved location and time window are given to you; do not change them."""
 
 MAX_STEPS = 6
@@ -71,6 +73,7 @@ def ask(question: str, cells: list[int], start: str, end: str, place_label: str,
         resp = client.chat.completions.create(
             model=route.model,
             messages=messages,
+            temperature=0,
             tools=TOOL_SCHEMAS
         )
         return resp
