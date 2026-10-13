@@ -51,6 +51,14 @@ def insert_snapshots(rows: list[dict]) -> int:
     return len(rows)
 
 
+def insert_closures(rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    cols = list(rows[0].keys())
+    client().insert("event_closures", [[r[c] for c in cols] for r in rows], column_names=cols)
+    return len(rows)
+
+
 def query(sql: str, params: dict | None = None) -> list[dict]:
     res = client().query(sql, parameters=params or {})
     return [dict(zip(res.column_names, row)) for row in res.result_rows]

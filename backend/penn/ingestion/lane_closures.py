@@ -4,8 +4,11 @@ Facts confirmed during recon (Oct 2026):
 - Each feature is ONE street segment (seg_id). One permit number can span many rows,
   so rows are grouped by permit number into one event.
 - Dates (effectivedate, expirationdate, raindate) are date-only values at UTC midnight.
-- status values seen: Current, Future. Expired permits appear to be dropped, which is
-  why `snapshot_rows` must run daily from day one.
+- status values seen: Current, Future. Most expired permits are dropped, which is
+  why `snapshot_rows` must run daily from day one. But not all: the Oct 13, 2026
+  snapshot still lists ~850 permits past their expiration date, so filter on dates,
+  never on presence in the layer.
+- Errors come back as HTTP 200 with an "error" body; `fetch_features` raises on them.
 - permittype includes Temporary No Parking and Temporary Loading Zone.
 - occupancytype separates Full Closure, Partial Closure, Footway.
 """
@@ -25,14 +28,54 @@ from ..timeutil import esri_date_to_calendar_date, is_open_ended
 SOURCE = "lane_closures"
 DATASET_PAGE = "https://opendataphilly.org/datasets/street-lane-closures/"
 
-PARKING_TYPES = {"Temporary No Parking", "Temporary Loading Zone"}
+# Every permittype seen in the layer (snapshots Oct 4-13, 2026) -> PENN event_type.
+# A type not listed here becomes "other", never silently "roadwork".
+PERMIT_TYPES = {
+    "Utility Work Excavation": "utility_work",
+    "Utility Work Non-Excavation": "utility_work",
+    "PWD_CW": "utility_work",                     # Water Department excavation
+    "PLUMBER": "utility_work",                    # service-line excavation
+    "PGW EUN Excavation": "utility_work",         # PGW emergency utility notice
+    "PGW EUN No Excavation": "utility_work",
+    "Municipal Contract Work": "roadwork",
+    "Milling/Resurfacing": "roadwork",
+    "Milling/Resurfacing - Planning Only": "roadwork",
+    "Equipment Placement": "construction",        # includes sidewalk sheds (Footway)
+    "Crane Placement": "construction",
+    "Block Party": "block_party",
+    "Temporary No Parking": "parking_restriction",
+    "Temporary Loading Zone": "parking_restriction",
+    "Temporary Passenger Loading Zone": "parking_restriction",
+    "Banner Installation": "other",
+}
+PARKING_TYPES = {t for t, k in PERMIT_TYPES.items() if k == "parking_restriction"}
+# Planning-only permits are a resurfacing plan with no expiry, not scheduled work.
+PLANNING_ONLY_SUFFIX = "Planning Only"
+
+
+class FetchError(RuntimeError):
+    """The layer returned an error or fewer rows than it says it has."""
+
+
+def _get_json(client: httpx.Client, params: dict) -> dict:
+    r = client.get(LANE_CLOSURES_URL, params=params)
+    r.raise_for_status()
+    body = r.json()
+    # ArcGIS reports errors with HTTP 200 and an "error" body; treat that as a failure, not an empty page.
+    if "error" in body:
+        raise FetchError(f"ArcGIS error: {body['error']}")
+    return body
 
 
 def fetch_features(client: httpx.Client | None = None) -> Iterator[dict]:
-    """Page through every feature as GeoJSON in WGS84."""
+    """Page through every feature as GeoJSON in WGS84.
+
+    Raises FetchError if any page errors, or if the total does not match the layer's own count.
+    """
     own = client is None
     client = client or httpx.Client(timeout=60)
     try:
+        expected = _get_json(client, {"where": "1=1", "returnCountOnly": "true", "f": "json"})["count"]
         offset = 0
         while True:
             params = {
@@ -44,24 +87,26 @@ def fetch_features(client: httpx.Client | None = None) -> Iterator[dict]:
                 "resultOffset": offset,
                 "resultRecordCount": LANE_CLOSURES_PAGE,
             }
-            r = client.get(LANE_CLOSURES_URL, params=params)
-            r.raise_for_status()
-            feats = r.json().get("features", [])
+            body = _get_json(client, params)
+            feats = body.get("features", [])
             yield from feats
-            if len(feats) < LANE_CLOSURES_PAGE:
+            offset += len(feats)
+            more = (body.get("properties") or {}).get("exceededTransferLimit", False)
+            if not feats or (not more and len(feats) < LANE_CLOSURES_PAGE):
                 break
-            offset += LANE_CLOSURES_PAGE
+        if offset != expected:
+            raise FetchError(f"got {offset} features, layer reports {expected}")
     finally:
         if own:
             client.close()
 
 
 def _event_type(permit_type: str) -> str:
-    if permit_type in PARKING_TYPES:
-        return "parking_restriction"
-    if "Utility" in permit_type:
-        return "utility_work"
-    return "roadwork"
+    return PERMIT_TYPES.get(permit_type.strip(), "other")
+
+
+def _is_planning_only(permit_type: str) -> bool:
+    return permit_type.strip().endswith(PLANNING_ONLY_SUFFIX)
 
 
 def _lines(geom: dict | None) -> list[list[tuple[float, float]]]:
@@ -99,6 +144,7 @@ def group_by_permit(features: list[dict]) -> list[NormalizedEvent]:
         end = esri_date_to_calendar_date(p0.get("expirationdate"))
         addresses = sorted({f["properties"].get("address") or "" for f in feats} - {""})
         permit_type = p0.get("permittype") or ""
+        planning = _is_planning_only(permit_type)
         events.append(
             NormalizedEvent(
                 source=SOURCE,
@@ -108,7 +154,7 @@ def group_by_permit(features: list[dict]) -> list[NormalizedEvent]:
                 description="; ".join(addresses),
                 source_url=DATASET_PAGE,
                 source_authority="official",
-                claim_certainty="scheduled",
+                claim_certainty="planned" if planning else "scheduled",
                 geometry_wkt=multiline_wkt(lines),
                 centroid_lat=lat,
                 centroid_lon=lon,
@@ -119,7 +165,7 @@ def group_by_permit(features: list[dict]) -> list[NormalizedEvent]:
                 start_date=start,
                 end_date=end,
                 open_ended=is_open_ended(start, end),
-                status="permitted",
+                status="planning_only" if planning else "permitted",
                 raw_status=p0.get("status") or "",
             )
         )

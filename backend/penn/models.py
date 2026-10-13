@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Literal
 
 SourceAuthority = Literal["official", "curated", "reported", "derived"]
-ClaimCertainty = Literal["scheduled", "observed", "inferred"]
+ClaimCertainty = Literal["scheduled", "observed", "inferred", "planned"]
 
 
 @dataclass

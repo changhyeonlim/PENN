@@ -25,8 +25,7 @@ def build_query(start: str, end: str, bbox: dict = CENTER_CITY_BBOX) -> str:
         "SELECT service_request_id, service_name, status, requested_datetime, "
         "closed_datetime, address, lat, lon FROM public_cases_fc "
         f"WHERE requested_datetime >= '{start}' AND requested_datetime < '{end}' "
-        f"AND lat BETWEEN {bbox['min_lat']} AND {bbox['max_lat']} "
-        f"AND lon BETWEEN {bbox['min_lon']} AND {bbox['max_lon']}"
+        "AND lat IS NOT NULL AND lon IS NOT NULL"
     )
 
 

@@ -26,15 +26,28 @@ class Resolved:
     needs_pin: bool = False
 
 
+NAME_KEYS = ("LISTNAME", "MAPNAME", "name", "NAME")  # OpenDataPhilly neighborhoods use LISTNAME
+
+
+def _feature_name(props: dict) -> str:
+    for k in NAME_KEYS:
+        v = props.get(k)
+        if v:
+            return str(v).replace("_", " ").strip().lower()
+    return ""
+
+
 def _load_areas() -> dict[str, list[int]]:
-    """data/areas/*.geojson: each feature has properties.name and a Polygon geometry."""
+    """data/areas/*.geojson polygons, plus data/areas/aliases.json for areas made of several
+    neighborhoods (for example "center city"). Returned longest name first, so "logan square"
+    is matched before "logan"."""
     areas: dict[str, list[int]] = {}
     if not AREAS_DIR.exists():
         return areas
     for path in AREAS_DIR.glob("*.geojson"):
         for f in json.loads(path.read_text()).get("features", []):
             g = f.get("geometry") or {}
-            name = (f.get("properties") or {}).get("name", "").strip().lower()
+            name = _feature_name(f.get("properties") or {})
             if not name:
                 continue
             polys = [g["coordinates"]] if g.get("type") == "Polygon" else g.get("coordinates", [])
@@ -42,7 +55,17 @@ def _load_areas() -> dict[str, list[int]]:
             for rings in polys:
                 cells.extend(polygon_cells(rings))
             areas[name] = cells
-    return areas
+    alias_file = AREAS_DIR / "aliases.json"
+    if alias_file.exists():
+        for alias, members in json.loads(alias_file.read_text()).items():
+            if alias.startswith("_"):
+                continue
+            cells = sorted({c for m in members for c in areas.get(m.lower(), [])})
+            missing = [m for m in members if m.lower() not in areas]
+            if missing:
+                raise ValueError(f"aliases.json: {alias!r} names unknown areas {missing}")
+            areas[alias.lower()] = cells
+    return dict(sorted(areas.items(), key=lambda kv: -len(kv[0])))
 
 
 _AREAS: dict[str, list[int]] | None = None
