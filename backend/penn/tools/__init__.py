@@ -1,30 +1,59 @@
-"""The four deterministic tools the agent may call. Each returns plain JSON with record IDs.
+"""The deterministic tools the agent may call. Each returns plain JSON with record IDs.
+
+    search_events          what is in effect here, in this window (now)
+    get_location_history   which events closed streets here in past years (then)
 
 Location and time are resolved BEFORE these run (see penn.geo.locate and penn.timeutil),
 so every tool takes H3 cells and ISO datetimes, never free text.
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 
 from .. import db
-from ..config import CENTER_CITY_BBOX, LOCAL_TZ
-from ..ingestion import recurring_events
-from .outlook import SQL_HITS, Outlook
+from ..config import LOCAL_TZ
+from . import history
 
-STREET_311_TYPES = ("street_condition", "traffic", "construction_complaint")  # set by the Nano classifier
-RECURRING_DIR = Path(__file__).resolve().parents[3] / "data" / "recurring_events"
+# The exact legs (centerline seg_ids) of a resolved intersection, set by the API or the eval runner
+# around one question. Records that carry seg_ids then match only on those legs; records without
+# them (311 reports, closures not placed on the centerline) still match by cells. The model never
+# handles the list: it is server-side context, like the resolved cells.
+LEGS: ContextVar[list[int] | None] = ContextVar("penn_legs", default=None)
+
+
+def place_filter(alias: str = "") -> str:
+    a = f"{alias}." if alias else ""
+    if LEGS.get():
+        return f"(hasAny({a}seg_ids, %(legs)s) OR (empty({a}seg_ids) AND hasAny({a}h3_cells, %(cells)s)))"
+    return f"hasAny({a}h3_cells, %(cells)s)"
+
+
+def place_params() -> dict:
+    return {"legs": LEGS.get() or []}
+
+
+# Every event_type in penn.events (lane closures after p2-11, curated events, 311).
+EVENT_TYPES = ["utility_work", "roadwork", "construction", "block_party", "parking_restriction", "event",
+               "other", "reported_issue"]
 
 EVENT_FIELDS = """
     event_id, source, event_type, title, description, organization, occupancy,
     source_url, source_authority, claim_certainty, start_date, end_date,
     start_ts, end_ts, open_ended, status, geometry_wkt
 """
+# What the model sees: the same fields minus the shape. geometry_wkt was half of every
+# tool result (~35k chars for 47 permits) and the model never needs it; the map gets
+# shapes from /map and /events/{id}.
+TOOL_FIELDS = EVENT_FIELDS.replace(", geometry_wkt", "")
+assert "geometry_wkt" not in TOOL_FIELDS
 
+# A record with an end time is active until that moment, by its times alone: an announced closure carries its
+# day as well, and matched by the day it stayed "active" all day after it ended (the Market Street Run for the
+# Blue, 7:30 to 10:30 AM, still on the map at noon). Without an end time (a show at 7 PM, a permit), the day decides.
 ACTIVE_FILTER = """
     (
-      (start_date IS NOT NULL AND start_date <= %(d1)s
+      (end_ts IS NULL AND start_date IS NOT NULL AND start_date <= %(d1)s
         AND (end_date IS NULL OR open_ended OR end_date >= %(d0)s))
       OR
       (start_ts IS NOT NULL AND start_ts < %(t1)s AND coalesce(end_ts, start_ts) >= %(t0)s)
@@ -40,33 +69,83 @@ def window_params(start: str, end: str) -> dict:
     return {"t0": t0.astimezone(timezone.utc), "t1": t1.astimezone(timezone.utc), "d0": t0.date(), "d1": last}
 
 
+def _iso(v):
+    """Timestamps leave as Philadelphia local time with offset: the model reads 11:00 UTC as
+    "11 a.m.", so it must never see UTC. Dates are calendar dates and stay as they are."""
+    if isinstance(v, datetime):
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)   # ClickHouse DateTime64(3, 'UTC')
+        return v.astimezone(LOCAL_TZ).isoformat()
+    if isinstance(v, date):
+        return v.isoformat()
+    return v
+
+
 def _jsonable(rows: list[dict]) -> list[dict]:
-    out = []
-    for r in rows:
-        out.append({k: (v.isoformat() if isinstance(v, (date, datetime)) else v) for k, v in r.items()})
-    return out
+    return [{k: _iso(v) for k, v in r.items()} for r in rows]
+
+
+BRIEF_LIMIT = 400   # a brief sends counts for most rows, so it can afford to read many more
+
+
+DURATION = "coalesce(dateDiff('day', start_date, end_date), dateDiff('day', start_ts, end_ts), 100000)"
 
 
 def search_events(cells: list[int], start: str, end: str, types: list[str] | None = None,
-                  include_311: bool = False, limit: int = 50) -> dict:
-    """Events touching the cells and active in [start, end). Permits are 'scheduled', never 'closed'."""
+                  include_311: bool = False, limit: int = 100, detail: str = "full",
+                  max_days: int | None = None) -> dict:
+    """Events touching the cells and active in [start, end). Permits are 'scheduled', never 'closed'.
+
+    max_days keeps only records lasting at most that many calendar days (a one-day permit is 1);
+    open-ended ones never qualify.
+
+    detail="full" lists every record. detail="brief" sorts them into what matters for a trip
+    (events, closures that change getting there, a count of the rest): see penn.agent.impact.
+
+    Shortest first: a one-day loading zone says more about "this Saturday" than a year-long
+    sidewalk shed, and with a limit the long ones are the ones to drop. Open-ended permits go
+    last. `truncated` tells the model more matches exist, so it never claims a complete list.
+    """
+    brief = detail == "brief"
+    if brief:
+        limit = max(limit, BRIEF_LIMIT)
     sql = f"""
-        SELECT {EVENT_FIELDS} FROM penn.events FINAL
-        WHERE hasAny(h3_cells, %(cells)s) AND {ACTIVE_FILTER}
+        SELECT {TOOL_FIELDS}{", seg_ids" if brief else ""} FROM events FINAL
+        WHERE {place_filter()} AND {ACTIVE_FILTER}
           {"AND event_type IN %(types)s" if types else ""}
           {"" if include_311 else "AND source != 'philly_311'"}
-        ORDER BY coalesce(start_ts, toDateTime64(start_date, 3)) LIMIT %(limit)s
+          {f"AND NOT open_ended AND {DURATION} < %(max_days)s" if max_days else ""}
+        ORDER BY open_ended, {DURATION}, coalesce(start_ts, toDateTime64(start_date, 3))
+        LIMIT %(limit_plus)s
     """
-    rows = db.query(sql, {"cells": cells, "types": types or [], "limit": limit, **window_params(start, end)})
-    return {"events": _jsonable(rows), "count": len(rows)}
+    params = window_params(start, end)
+    rows = db.query(sql, {"cells": cells, "types": types or [], "limit_plus": limit + 1, "max_days": max_days or 0,
+                          **params, **place_params()})
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    if brief:
+        from ..agent import impact
+        out = impact.brief(_jsonable(rows), start) | {"count": len(rows), "truncated": truncated}
+    else:
+        out = {"events": _jsonable(rows), "count": len(rows), "truncated": truncated}
+    # The model often answers "in past years" / "will X close" questions from this tool alone and
+    # never sees the history. Point it there when history exists for this place.
+    # The model often answers "in past years" / "will X close" questions from this tool alone and
+    # never calls get_location_history, so a compact digest of past event closures here rides along:
+    # each event, the years it closed streets here, and one citable record per year.
+    past = db.query(HISTORY_SQL.format(place=place_filter("e")), {"cells": cells, "since": 2016, "before": params["d0"], **place_params()})
+    if past:
+        out["past_events_here"] = history.digest(_jsonable(past), history.catalog())
+    return out
 
 
 def get_location_timeline(cells: list[int], start: str, end: str) -> dict:
-    """Monthly history for a place: 311 counts by type, plus permits and events with IDs."""
+    """Monthly history for a place: 311 counts by type, plus permits and events with IDs.
+    Feeds the map's /timeline panel; not offered to the model (get_location_history is)."""
     counts = db.query(
         """
         SELECT toStartOfMonth(start_ts, 'America/New_York') AS month, event_type, count() AS n
-        FROM penn.events FINAL
+        FROM events FINAL
         WHERE source = 'philly_311' AND hasAny(h3_cells, %(cells)s)
           AND start_ts >= %(t0)s AND start_ts < %(t1)s
         GROUP BY month, event_type ORDER BY month
@@ -74,7 +153,7 @@ def get_location_timeline(cells: list[int], start: str, end: str) -> dict:
         {"cells": cells, **window_params(start, end)},
     )
     items = search_events(cells, start, end, include_311=False, limit=200)["events"]
-    snapshot_start = db.query("SELECT nullIf(min(snapshot_date), toDate(0)) AS first FROM penn.permit_snapshots")
+    snapshot_start = db.query("SELECT nullIf(min(snapshot_date), toDate(0)) AS first FROM permit_snapshots")
     return {
         "monthly_311": _jsonable(counts),
         "events": items,
@@ -82,56 +161,40 @@ def get_location_timeline(cells: list[int], start: str, end: str) -> dict:
     }
 
 
-def analyze_disruption(cells: list[int], start: str, end: str) -> dict:
-    """Active items grouped by occupancy, so a sidewalk shed is not counted as a road closure."""
-    events = search_events(cells, start, end, limit=200)["events"]
-    groups: dict[str, list[str]] = {"Full Closure": [], "Partial Closure": [], "Footway": [], "Event": [], "Other": []}
-    for e in events:
-        key = e["occupancy"] if e["occupancy"] in groups else ("Event" if e["event_type"] == "event" else "Other")
-        groups[key].append(e["event_id"])
-    return {"by_occupancy": groups, "events": events,
-            "hours_note": "Permits give dates only, not daily work hours."}
+HISTORY_SQL = """
+    SELECT e.event_id AS event_id, c.series AS series, c.year AS year, c.start_date AS date,
+           c.street AS street, c.from_street AS from_street, c.to_street AS to_street,
+           e.start_ts AS start, e.end_ts AS end, c.conditional AS conditional
+    FROM events AS e FINAL
+    INNER JOIN (SELECT * FROM event_closures FINAL) AS c ON c.closure_id = e.source_record_id
+    WHERE e.source = 'event_closures' AND {place}
+      AND c.year >= %(since)s AND c.start_date < %(before)s
+    ORDER BY c.series, c.start_date, e.start_ts
+"""
+COVERAGE_SQL = """
+    SELECT uniqExact(series) AS events_in_penn, min(year) AS first_year, max(year) AS last_year
+    FROM event_closures FINAL WHERE geocoded
+"""
 
 
-def _past_dates(target: date, years: int = 3) -> list[date]:
-    """Same weekday as the target, every week for `years` years before it."""
-    return [target - timedelta(weeks=w) for w in range(1, 52 * years + 1)]
+def get_location_history(cells: list[int], start: str, end: str, since_year: int = 2016) -> dict:
+    """Past announced event closures touching the cells, grouped by event and year.
+    Only closures that started before the window ends, so nothing from after the question leaks in."""
+    before = window_params(start, end)["d1"] + timedelta(days=1)
+    rows = _jsonable(db.query(HISTORY_SQL.format(place=place_filter("e")),
+                              {"cells": cells, "since": since_year, "before": before, **place_params()}))
+    cov = _jsonable(db.query(COVERAGE_SQL))
+    return history.summarize(rows, history.catalog(), cov[0] if cov else {})
 
 
-def _center_city_cells() -> list[int]:
-    from ..geo.h3util import polygon_cells
-    b = CENTER_CITY_BBOX
-    ring = [(b["min_lon"], b["min_lat"]), (b["max_lon"], b["min_lat"]), (b["max_lon"], b["max_lat"]),
-            (b["min_lon"], b["max_lat"]), (b["min_lon"], b["min_lat"])]
-    return polygon_cells([ring])
-
-
-def disruption_outlook(cells: list[int], start: str, end: str) -> dict:
-    s = datetime.fromisoformat(start).astimezone(LOCAL_TZ)
-    e = datetime.fromisoformat(end).astimezone(LOCAL_TZ)
-    h0, h1 = s.hour, (e.hour if e.date() == s.date() and e.hour > s.hour else 24)
-    dates = _past_dates(s.date())
-    base_cells = _center_city_cells()
-    params = {"street_types": list(STREET_311_TYPES), "dates": dates, "h0": h0, "h1": h1}
-    target_hits = db.query(SQL_HITS, {**params, "cells": cells})[0]["hits"]
-    base_hits = db.query(SQL_HITS, {**params, "cells": base_cells})[0]["hits"]
-    scheduled = [x["event_id"] for x in search_events(cells, start, end)["events"]]
-    recurring = {}
-    if RECURRING_DIR.exists():
-        recurring = recurring_events.recurrence(recurring_events.load_all(RECURRING_DIR), set(cells))
-    o = Outlook(
-        target_hits=target_hits, target_pairs=len(cells) * len(dates),
-        base_hits=base_hits, base_pairs=len(base_cells) * len(dates),
-        past_windows=len(dates), scheduled_now=scheduled, recurring=recurring,
-    )
-    return o.summary()
+def _search_for_model(**kw) -> dict:
+    """The model's search_events: a brief unless it asks for the full list."""
+    return search_events(**{"detail": "brief", **kw})
 
 
 TOOLS = {
-    "search_events": search_events,
-    "get_location_timeline": get_location_timeline,
-    "analyze_disruption": analyze_disruption,
-    "disruption_outlook": disruption_outlook,
+    "search_events": _search_for_model,
+    "get_location_history": get_location_history,
 }
 
 _LOC = {
@@ -143,20 +206,25 @@ _LOC = {
 TOOL_SCHEMAS = [
     {"type": "function", "function": {
         "name": "search_events",
-        "description": "Permits, curated events and other items touching the location and active in the window.",
+        "description": "Permits, curated events and other items touching the location and active in the window. If truncated is true, more matches exist: say the list is partial or narrow it with types.",
         "parameters": {"type": "object", "required": ["cells", "start", "end"], "properties": {
-            **_LOC, "types": {"type": "array", "items": {"type": "string"}},
+            **_LOC,
+            "detail": {"type": "string", "enum": ["brief", "full"],
+                       "description": "brief (default): for questions about an area or a trip (what is going on, "
+                                      "can I get there): events, closures that change getting there, and only a "
+                                      "count of smaller permits. full: every record, for questions about permits, "
+                                      "one block or address, parking, construction, or a specific record."},
+            "types": {"type": "array", "items": {"type": "string", "enum": EVENT_TYPES},
+                              "description": "Optional filter. Leave it out unless the user asks for one kind only; "
+                                             "parking_restriction covers Temporary No Parking and loading zones."},
             "include_311": {"type": "boolean"}}}}},
     {"type": "function", "function": {
-        "name": "get_location_timeline",
-        "description": "History of the location: monthly 311 counts and past permits and events.",
-        "parameters": {"type": "object", "required": ["cells", "start", "end"], "properties": _LOC}}},
-    {"type": "function", "function": {
-        "name": "analyze_disruption",
-        "description": "Active items grouped by occupancy type (full closure, partial, footway, event).",
-        "parameters": {"type": "object", "required": ["cells", "start", "end"], "properties": _LOC}}},
-    {"type": "function", "function": {
-        "name": "disruption_outlook",
-        "description": "Past-window rate for this place vs the Center City base rate, sample sizes, and recurring-event history.",
-        "parameters": {"type": "object", "required": ["cells", "start", "end"], "properties": _LOC}}},
+        "name": "get_location_history",
+        "description": "Past City-announced event closures at this location (races, parades, festivals, "
+                       "one-off events), grouped by event and year, with times. Use it for questions about past "
+                       "years, whether something happens every year, or what usually closes here. recurrence "
+                       "says whether an event is annual, irregular or one_off; coverage says what PENN's "
+                       "records include.",
+        "parameters": {"type": "object", "required": ["cells", "start", "end"], "properties": {
+            **_LOC, "since_year": {"type": "integer", "description": "Earliest year to include (default 2016)"}}}}},
 ]

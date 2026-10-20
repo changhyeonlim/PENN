@@ -1,5 +1,5 @@
 """Runs the real schema and tool SQL on embedded ClickHouse (chdb). Skipped if chdb is missing.
-Install with: pip install chdb"""
+Install with: pip install -e ".[sqltest]" (Linux and macOS only; skipped on Windows)."""
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -70,15 +70,7 @@ def test_permit_window_edges(fixture_db):
     assert tools.search_events(cells, "2026-10-21T00:00:00-04:00", "2026-10-22T00:00:00-04:00")["count"] == 0
 
 
-def test_analyze_groups_by_occupancy(fixture_db):
-    permit, _ = fixture_db
-    r = tools.analyze_disruption(permit.h3_cells, "2026-10-10T06:00:00-04:00", "2026-10-10T12:00:00-04:00")
-    assert r["by_occupancy"]["Full Closure"] == ["lane_closures:2025-99999"]
-
-
-def test_timeline_and_outlook(fixture_db):
+def test_timeline(fixture_db):
     _, report = fixture_db
     tl = tools.get_location_timeline(report.h3_cells, "2026-01-01T00:00:00-05:00", "2026-10-05T00:00:00-04:00")
     assert tl["monthly_311"][0]["n"] == 1 and tl["closure_history_starts"] is None
-    o = tools.disruption_outlook(report.h3_cells, "2026-10-03T09:00:00-04:00", "2026-10-03T12:00:00-04:00")
-    assert o["target_hits"] == 1 and o["past_windows"] == 156 and o["enough_history"]
