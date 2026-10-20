@@ -228,11 +228,21 @@ def load_centerline(path: Path) -> list[Segment]:
 
 
 # Blocks that carry a different name in the centerline than in notices: the 1-199 blocks of
-# 5th and 6th Street beside Independence Mall are INDEPENDENCE MALL E and W.
+# 5th and 6th Street beside Independence Mall are INDEPENDENCE MALL E and W, and the Falls Bridge
+# (Kelly Drive to MLK Drive) is FALLS RD; the centerline has no FALLS BRG.
 # (name, type) -> (st_name, st_type, suf_dir)
 EQUIVALENTS = {
     ("5TH", "ST"): ("INDEPENDENCE", "MALL", "E"),
     ("6TH", "ST"): ("INDEPENDENCE", "MALL", "W"),
+    ("FALLS", "BRG"): ("FALLS", "RD", ""),
+}
+
+# Named places that are not street names in the centerline, as the segments that make them up.
+# Eakins Oval is the roundabout in front of the Philadelphia Museum of Art: the two Parkway
+# carriageways around the fountain (2300-2600 blocks) and the Kelly Drive pieces that close the
+# loop at the museum steps. A notice closing "Eakins Oval" closes that whole area.
+PLACES = {
+    "EAKINSOVAL": (422396, 422422, 422385, 422387),
 }
 
 
@@ -259,6 +269,9 @@ class Network:
 
     def __init__(self, segments: list[Segment], equivalents: dict | None = None,
                  loose_types: bool = False):
+        by_id = {s.seg_id: s for s in segments}
+        self.by_id = by_id
+        self.places = {key: [by_id[i] for i in ids if i in by_id] for key, ids in PLACES.items()}
         self.by_key: dict[str, list[Segment]] = defaultdict(list)
         for s in segments:
             self.by_key[s.street.key].append(s)
@@ -268,6 +281,8 @@ class Network:
     def find(self, street: StreetName) -> list[Segment]:
         """Segments carrying this name. A missing direction matches any; a missing type
         matches only segments that have none ("Avenue of the Republic")."""
+        if street.key in self.places:
+            return self.places[street.key]
         out = [s for s in self.by_key.get(street.key, [])
                if s.street.type == street.type and (not street.dir or s.street.dir == street.dir)]
         eq = self.equivalents.get((street.name, street.type))
@@ -423,6 +438,13 @@ def resolve(row: dict, net: Network) -> Resolution:
 
     if AREA_RE.search(street) or " to " in frm.lower() or " to " in to.lower():
         return Resolution("area", reason="area or free-text list, not a single street")
+
+    place = normalize(street)
+    if place and net.places.get(place.key):
+        # A closure of a named place ("Eakins Oval, between Kelly Drive and MLK Drive") closes
+        # the whole place; the cross streets only describe where it sits.
+        return Resolution("named", list(net.places[place.key]),
+                          notes=[f"{street} read as the whole place"] if frm or to else [])
 
     m = BLOCK_RE.match(street)
     if m:

@@ -286,3 +286,14 @@ def test_load_routes_rejects_gaps_and_missing_note(tmp_path):
 
 def test_missing_routes_file_is_fine(tmp_path):
     assert load_routes(tmp_path / "absent.csv") == ({}, [])
+
+
+def test_eakins_oval_is_the_whole_oval():
+    from penn.geo.streets import PLACES, Network, Segment, StreetName, resolve
+    ids = PLACES["EAKINSOVAL"]
+    segs = [Segment(i, StreetName("", "BENJAMIN FRANKLIN", "PKWY"), [(0, k), (0, k + 1)]) for k, i in enumerate(ids)]
+    net = Network(segs)
+    for row in ({"street": "Eakins Oval", "from_street": "", "to_street": ""},
+                {"street": "Eakins Oval", "from_street": "Kelly Drive", "to_street": "Martin Luther King Jr. Drive"}):
+        r = resolve(row, net)
+        assert r.ok and sorted(s.seg_id for s in r.segments) == sorted(ids), row
