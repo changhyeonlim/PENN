@@ -43,6 +43,8 @@ def route_question(question: str) -> Route:
     comparison or explanation. Return Ultra with a reason naming the pattern,
     otherwise Super.
     """
+    if not settings.routing_enabled:
+        return Route(settings.model_super, "super", "Routing paused: Super for every turn")
     for pattern in ULTRA_PATTERNS:
         m = pattern.search(question)
         if m:
@@ -51,7 +53,7 @@ def route_question(question: str) -> Route:
 
 def maybe_escalate(current: Route, tool_calls_so_far: int) -> Route:
     """Move a Super turn to Ultra once it has needed more than two tool calls."""
-    if tool_calls_so_far > MAX_TOOLS_BEFORE_ESCALATE and current.tier == 'super':
+    if settings.routing_enabled and tool_calls_so_far > MAX_TOOLS_BEFORE_ESCALATE and current.tier == 'super':
         return Route(settings.model_ultra, "ultra", f"Tool calling exceeded: # of tool calls [{tool_calls_so_far}]")
     else:
         return current

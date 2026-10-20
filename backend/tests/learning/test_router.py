@@ -1,7 +1,25 @@
+import dataclasses
+
+import pytest
+
+from penn.agent import router
 from penn.agent.router import Route, classification_route, maybe_escalate, route_question
 from penn.config import settings
 
 from .conftest import needs
+
+
+@pytest.fixture(autouse=True)
+def routing_on(monkeypatch):
+    """These tests describe routing when it is on (PENN_ROUTING=1); it is paused by default."""
+    monkeypatch.setattr(router, "settings", dataclasses.replace(settings, routing_enabled=True))
+
+
+def test_paused_routing_always_uses_super(monkeypatch):
+    monkeypatch.setattr(router, "settings", dataclasses.replace(settings, routing_enabled=False))
+    assert route_question("Why do you think that?").tier == "super"
+    start = Route(settings.model_super, "super", "x")
+    assert maybe_escalate(start, 5).tier == "super"
 
 
 def test_plain_lookup_goes_to_super():

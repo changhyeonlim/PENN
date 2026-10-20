@@ -41,9 +41,18 @@ class Settings:
     )
     token_factory_api_key: str = field(default_factory=lambda: os.getenv("TOKEN_FACTORY_API_KEY", ""))
     # Confirm exact IDs in the Token Factory console before the demo.
-    model_nano: str = field(default_factory=lambda: os.getenv("MODEL_NANO", "nvidia/nemotron-3-nano-30b-a3b"))
+    model_nano: str = field(default_factory=lambda: os.getenv("MODEL_NANO", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"))
     model_super: str = field(default_factory=lambda: os.getenv("MODEL_SUPER", "nvidia/nemotron-3-super-120b-a12b"))
-    model_ultra: str = field(default_factory=lambda: os.getenv("MODEL_ULTRA", "nvidia/nemotron-3-ultra-550b-a55b"))
+    model_ultra: str = field(default_factory=lambda: os.getenv("MODEL_ULTRA", "nvidia/Nemotron-3-Ultra-550b-a55b"))
+    # The one model that runs every Ask PENN turn; empty means model_super. Super matched Ultra on the eval
+    # (28 vs 29 of 51) at a 4s median and 8s p90; Ultra's p90 was 49s. Set MODEL_CHAT to compare.
+    model_chat: str = field(default_factory=lambda: os.getenv("MODEL_CHAT", ""))
+    # Per model call. Super's largest call on the eval was 1.5k output tokens and 6s; Ultra and Qwen3.5
+    # reached the endpoint's own 8192 cap, so set PENN_MAX_TOKENS=8192 (and a longer timeout) to run those.
+    model_max_tokens: int = field(default_factory=lambda: int(os.getenv("PENN_MAX_TOKENS", "4096")))
+    model_timeout_s: float = field(default_factory=lambda: float(os.getenv("PENN_MODEL_TIMEOUT", "60")))
+    # Routing is paused: every chat turn uses Super. PENN_ROUTING=1 turns the Ultra rules back on.
+    routing_enabled: bool = field(default_factory=lambda: os.getenv("PENN_ROUTING", "0") == "1")
 
     ais_gatekeeper_key: str = field(default_factory=lambda: os.getenv("AIS_GATEKEEPER_KEY", ""))
     # Ticketmaster Discovery API consumer key (developer.ticketmaster.com). TICKETMASTER_API is the
