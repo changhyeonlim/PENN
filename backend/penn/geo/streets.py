@@ -44,7 +44,7 @@ CENTERLINE_URL = (
     "https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/"
     "Street_Centerline/FeatureServer/0/query"
 )
-CENTERLINE_FIELDS = "seg_id,pre_dir,st_name,st_type,suf_dir,l_f_add,l_t_add,r_f_add,r_t_add"
+CENTERLINE_FIELDS = "seg_id,pre_dir,st_name,st_type,suf_dir,l_f_add,l_t_add,r_f_add,r_t_add,class"
 CENTERLINE_PAGE = 2000  # the layer's maxRecordCount
 
 TYPES = {
@@ -156,6 +156,7 @@ class Segment:
     addr_lo: int = 0  # lowest non-zero address on either side, 0 if none
     addr_hi: int = 0
     suf: str = ""     # suf_dir: E/W on Independence Mall and Logan Circle, ramp letters elsewhere
+    cls: int = 0      # centerline class: 1 expressway, 2 major arterial, 3 minor arterial, 4 collector, 5 local; 0 unknown
 
     @property
     def ends(self) -> tuple[Coord, Coord]:
@@ -187,7 +188,8 @@ def segment_from_feature(f: dict) -> Segment | None:
     street = StreetName((p.get("pre_dir") or "").strip(), (p.get("st_name") or "").strip(),
                         (p.get("st_type") or "").strip())
     return Segment(int(p["seg_id"]), street, [tuple(c) for c in g["coordinates"]],
-                   min(adds, default=0), max(adds, default=0), (p.get("suf_dir") or "").strip())
+                   min(adds, default=0), max(adds, default=0), (p.get("suf_dir") or "").strip(),
+                   int(p.get("class") or 0))
 
 
 def download_centerline(path: Path, client: httpx.Client | None = None) -> int:
