@@ -28,7 +28,7 @@ from ..timeutil import esri_date_to_calendar_date, is_open_ended
 SOURCE = "lane_closures"
 DATASET_PAGE = "https://opendataphilly.org/datasets/street-lane-closures/"
 
-# Every permittype seen in the layer (snapshots Oct 4-13, 2026) -> PENN event_type.
+# Every permittype seen in the layer (snapshots Oct 4-15, 2026) -> PENN event_type.
 # A type not listed here becomes "other", never silently "roadwork".
 PERMIT_TYPES = {
     "Utility Work Excavation": "utility_work",
@@ -40,6 +40,7 @@ PERMIT_TYPES = {
     "Municipal Contract Work": "roadwork",
     "Milling/Resurfacing": "roadwork",
     "Milling/Resurfacing - Planning Only": "roadwork",
+    "Milling/Resurfacing/Traffic Calming": "roadwork",   # first seen Oct 15, 2026 (263 segments, open-ended G permits)
     "Equipment Placement": "construction",        # includes sidewalk sheds (Footway)
     "Crane Placement": "construction",
     "Block Party": "block_party",

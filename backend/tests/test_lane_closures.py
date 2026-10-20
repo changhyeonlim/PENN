@@ -29,6 +29,24 @@ def test_parking_permits_are_typed():
     assert evs[0].event_type == "parking_restriction"
 
 
+def test_permit_types_are_mapped():
+    cases = {"Block Party": "block_party", "Temporary Passenger Loading Zone": "parking_restriction",
+             "PGW EUN Excavation": "utility_work", "Equipment Placement": "construction",
+             "Municipal Contract Work": "roadwork", "Milling/Resurfacing/Traffic Calming": "roadwork",
+             "Some New Type": "other"}
+    for i, (ptype, expected) in enumerate(cases.items()):
+        evs = group_by_permit([feat(i, f"P{i}", SEG_A, ptype=ptype)])
+        assert evs[0].event_type == expected, ptype
+
+
+def test_planning_only_is_not_scheduled():
+    evs = group_by_permit([feat(1, "G2023-00166", SEG_A, ptype="Milling/Resurfacing - Planning Only", exp=None)])
+    e = evs[0]
+    assert e.event_type == "roadwork"
+    assert e.claim_certainty == "planned" and e.status == "planning_only"
+    assert e.open_ended
+
+
 def test_placeholder_expiry_flagged():
     evs = group_by_permit([feat(1, "2024-00565", SEG_A, eff=1705276800000, exp=4198176000000)])
     assert evs[0].open_ended
