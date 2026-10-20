@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import os
+
+import h3
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -89,6 +91,29 @@ def timeline(lat: float, lon: float, years: int = 3):
     end = timeutil.now_local()
     start = end.replace(year=end.year - years)
     return tools.get_location_timeline(loc.cells, start.isoformat(), end.isoformat()) | {"place": loc.label}
+
+
+def _view(loc: locate.Resolved) -> dict | None:
+    """Center and bounds of the resolved cells, so the map can fly there, and the exact point of a
+    corner or address (none for a neighborhood), so the map can mark what was asked about."""
+    if not loc.cells:
+        return None
+    pts = [ll for c in loc.cells for ll in h3.cell_to_boundary(h3.int_to_str(c))]
+    lats, lons = [p[0] for p in pts], [p[1] for p in pts]
+    return {"center": [sum(lons) / len(lons), sum(lats) / len(lats)],
+            "bounds": [[min(lons), min(lats)], [max(lons), max(lats)]],
+            "point": list(loc.point) if loc.point else None}
+
+
+@app.get("/locate")
+def locate_place(q: str):
+    """Resolve only the place in a question (no model), so the map can move while /agent works."""
+    loc = locate.from_text(q)
+    if loc.method in ("outside", "none") or loc.needs_pin or not loc.cells:
+        return {"found": False, "place": loc.label or None}
+    win = resolve_window(q)
+    return {"found": True, "place": loc.label, "view": _view(loc),
+            "window": win.label if win else "the next 7 days"}
 
 
 class AskBody(BaseModel):
