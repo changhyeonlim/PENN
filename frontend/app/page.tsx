@@ -6,7 +6,7 @@ import { AnswerText, citationOrder } from "@/components/AnswerText";
 import { Legend } from "@/components/Legend";
 import { PermitPanel } from "@/components/PermitPanel";
 import {
-  askAgent, category, COLOR, daysAway, flagDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, ROAD, shortWhen, STRENGTH,
+  activeToday, appNow, askAgent, category, COLOR, daysAway, flagDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, ROAD, shortWhen, STRENGTH,
   strengthBand, streetCase, tidy, todayStatus, wktToGeometry,
   type AgentReply, type Category, type PennEvent, type View,
 } from "@/lib/api";
@@ -50,7 +50,7 @@ const todayOpacity = ["step", ["get", "days"], STRENGTH[0].opacity,
 
 /** The map's own window. Questions resolve their own dates on the server and never change it. */
 function range(days: number): { start: string; end: string } {
-  const now = new Date();
+  const now = appNow();
   return { start: now.toISOString(), end: new Date(now.getTime() + days * 864e5).toISOString() };
 }
 

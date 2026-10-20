@@ -129,8 +129,9 @@ function day(s: string) {
 
 export function when(e: PennEvent): { range: string; note?: string } {
   if (e.start_ts) {
-    return { range: `${new Date(e.start_ts).toLocaleString("en-US", TIME)} to ${e.end_ts
-      ? new Date(e.end_ts).toLocaleString("en-US", TIME) : "the end of the event"}` };
+    const start = new Date(e.start_ts).toLocaleString("en-US", TIME);
+    if (!e.end_ts) return { range: start, note: "Start time only; no end time is listed." };
+    return { range: `${start} to ${new Date(e.end_ts).toLocaleString("en-US", TIME)}` };
   }
   if (e.start_date) {
     if (e.open_ended) return { range: `From ${day(e.start_date)}`, note: "No end date is listed." };
@@ -142,13 +143,22 @@ export function when(e: PennEvent): { range: string; note?: string } {
   return { range: "Dates not listed" };
 }
 
-function todayISO(now = new Date()) {
+/** Demo mode: a fixed "now" (NEXT_PUBLIC_PENN_NOW, ISO 8601), matching the API's PENN_NOW, so a frozen
+ *  snapshot (jobs/freeze_demo.py) looks the same whenever the demo is recorded. */
+export const PINNED_NOW = process.env.NEXT_PUBLIC_PENN_NOW || "";
+export function appNow(): Date {
+  return PINNED_NOW ? new Date(PINNED_NOW) : new Date();
+}
+
+function todayISO(now = appNow()) {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
 /** Whether the permit is in effect today: drawn at full strength on the map, faded otherwise. */
-export function activeToday(e: PennEvent, now = new Date()): boolean {
-  if (e.start_ts) return new Date(e.start_ts) <= now && (!e.end_ts || now <= new Date(e.end_ts));
+export function activeToday(e: PennEvent, now = appNow()): boolean {
+  // A start time with no end (a show, a game) happens on its start day: in effect all of that day.
+  if (e.start_ts && !e.end_ts) return localISO(e.start_ts) === todayISO(now);
+  if (e.start_ts) return new Date(e.start_ts) <= now && now <= new Date(e.end_ts!);
   if (e.start_date) {
     const t = todayISO(now);
     return e.start_date.slice(0, 10) <= t && (e.open_ended || !e.end_date || t <= e.end_date.slice(0, 10));
@@ -163,9 +173,18 @@ function dayDiff(iso: string, now: Date) {
 }
 const localISO = (ts: string) => todayISO(new Date(ts));
 
+/** Whether the record is over, by its own end: an end time that has passed (a 7:30 to 10:30 AM closure is over
+ *  at 10:31), or an end date before today. A start time with no end lasts its day; an open-ended permit never ends. */
+export function isOver(e: PennEvent, now = appNow()): boolean {
+  if (e.end_ts) return new Date(e.end_ts) < now;
+  if (e.start_ts) return localISO(e.start_ts) < todayISO(now);
+  return !!e.end_date && !e.open_ended && e.end_date.slice(0, 10) < todayISO(now);
+}
+
 /** Days from today to the permit: 0 in effect today, days until it starts, or days since it ended. */
-export function daysAway(e: PennEvent, now = new Date()): number {
+export function daysAway(e: PennEvent, now = appNow()): number {
   if (activeToday(e, now)) return 0;
+  if (e.end_ts && localISO(e.end_ts) === todayISO(now) && new Date(e.end_ts) < now) return 0;   // over, earlier today
   const start = e.start_ts ? localISO(e.start_ts) : e.start_date;
   const end = e.end_ts ? localISO(e.end_ts) : e.end_date;
   if (start && dayDiff(start, now) > 0) return dayDiff(start, now);
@@ -175,8 +194,12 @@ export function daysAway(e: PennEvent, now = new Date()): number {
 
 const plural = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
 
-export function todayStatus(e: PennEvent, now = new Date()): string {
+export function todayStatus(e: PennEvent, now = appNow()): string {
+  if (e.start_ts && !e.end_ts && activeToday(e, now)) {
+    return new Date(e.start_ts) > now ? `Today at ${clock(e.start_ts)}` : `Today; started at ${clock(e.start_ts)}`;
+  }
   if (activeToday(e, now)) return "In effect today";
+  if (e.end_ts && localISO(e.end_ts) === todayISO(now) && new Date(e.end_ts) < now) return `Ended today at ${clock(e.end_ts)}`;
   const start = e.start_ts ? localISO(e.start_ts) : e.start_date;
   const end = e.end_ts ? localISO(e.end_ts) : e.end_date;
   if (start && dayDiff(start, now) > 0) return `Starts in ${plural(dayDiff(start, now))}, on ${day(start)}`;
