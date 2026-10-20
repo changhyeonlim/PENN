@@ -53,6 +53,17 @@ SOURCE = "event_closures"
 
 REQUIRED = ("series", "year", "date", "street", "source_url")
 SOURCE_PREFIX = "https://www.phila.gov/"
+# The one non-City source allowed: race-organizer closure lists the City pointed to, read from an
+# Internet Archive copy taken during race week (the live pages are gone). Decided 2026-10-13 for the
+# 2024 and 2025 Philadelphia Marathon, whose closures the City did not publish on phila.gov.
+ORGANIZER_ARCHIVE = re.compile(r"^https://web\.archive\.org/web/\d{14}/https://www\.philadelphiamarathon\.com/")
+
+
+def publisher(url: str) -> tuple[str, str]:
+    """(organization, wording) for a closure's source, so answers can say who published it."""
+    if ORGANIZER_ARCHIVE.match(url):
+        return ("Philadelphia Marathon race organizer (archived copy)", "published by the race organizer")
+    return ("City of Philadelphia", "announced by the City")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 TIME_RE = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 TRUE = {"yes", "true", "1"}
@@ -97,8 +108,8 @@ def parse_row(p: dict[str, str], where: str) -> dict:
     missing = [k for k in REQUIRED if not p.get(k)]
     if missing:
         raise ValueError(f"missing {', '.join(missing)}")
-    if not p["source_url"].startswith(SOURCE_PREFIX):
-        raise ValueError(f"source_url must start with {SOURCE_PREFIX}")
+    if not (p["source_url"].startswith(SOURCE_PREFIX) or ORGANIZER_ARCHIVE.match(p["source_url"])):
+        raise ValueError(f"source_url must start with {SOURCE_PREFIX} (or be an archived race-organizer page)")
     try:
         year = int(p["year"])
     except ValueError:
@@ -214,7 +225,8 @@ def to_event(row: dict, segments: list, notes: list[str], now: datetime) -> Norm
     where = row["street"]
     if row.get("from_street") and row.get("to_street"):
         where += f", {row['from_street']} to {row['to_street']}"
-    desc = [f"Street closure announced by the City for {_series_title(row['series'])} {row['year']}."]
+    org, wording = publisher(row["source_url"])
+    desc = [f"Street closure {wording} for {_series_title(row['series'])} {row['year']}."]
     if row.get("conditional"):
         desc.append("Closes only if conditions warrant.")
     if row.get("notes"):
@@ -227,7 +239,7 @@ def to_event(row: dict, segments: list, notes: list[str], now: datetime) -> Norm
         event_type="event",
         title=f"{_series_title(row['series'])}: {where}",
         description=" ".join(desc),
-        organization="City of Philadelphia",
+        organization=org,
         source_url=row["source_url"],
         source_authority="curated",
         claim_certainty="observed" if has_ended(row, now) else "scheduled",
