@@ -1,11 +1,22 @@
 .env
+.env*.local
+*.tsbuildinfo
 __pycache__/
 *.pyc
 .pytest_cache/
 node_modules/
 .next/
 eval/results/
+logs/
 *.egg-info/
+
+# visitphilly pages saved by hand, and the snapshots made from them: not ours to publish
+scripts/*.htm
+scripts/*.html
+scripts/*_files/
+data/snapshots/visitphilly/
+# Tavily search results (web pages are their publishers'); kept 24 h, replayed in demo mode
+data/web_cache/
 
 # Street centerline (33 MB); geocode_closures downloads it when missing
 data/centerline/
