@@ -109,6 +109,12 @@ function loadedStamp(iso: string, now: Date): string {
   return t.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
 }
 
+/** "Oct 17, 2026, 10:00 AM" in Philadelphia time. */
+function demoStamp(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric",
+    year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
 /** One show at one venue on several dates: listings of the same kind with the same title at the same spot
  *  (4 decimal places, about 10 m). Fills `series` (each date's id -> the run, soonest first) and `leads` (the
  *  date drawn for the run: the next one not yet over, else the first). */
@@ -360,10 +366,7 @@ export default function Page() {
     });
     map.current = m;
     m.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-    // The legend owns the bottom-right corner, so the credits go under the zoom buttons.
-    m.addControl(new maplibregl.AttributionControl({ compact: true }), "top-right");
-    // A compact attribution opens expanded on load; start it folded to its "i" button.
-    m.once("idle", () => m.getContainer().querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show"));
+    // No attribution control: the map credits are in the fine print along the page's bottom edge.
 
     const init = () => {
       if (m.getSource("events")) return;
@@ -853,6 +856,36 @@ export default function Page() {
             placeholder={pin ? "Ask about the pinned point" : narrow ? "Ask about a street or corner" : "Ask about a street or corner, like Spruce and 15th next week"} />
           <button type="submit" className="ask-btn" disabled={!question.trim() || busy}>{busy ? "Asking" : "Ask"}</button>
         </form>
+        {/* Two rows: what the data is and where it comes from, then privacy and the map credits. */}
+        <div className="fine-print">
+          <p className="fine-row">
+            <span className="fine-give" title={"Not an official City of Philadelphia source. Data is shown as published "
+              + "and may be incomplete or out of date; check the linked record. Sources: City of Philadelphia street "
+              + "permits and event-closure notices, race organizers, visitphilly.com and Ticketmaster listings."}>
+              {PINNED_NOW && <strong className="fine-demo">Demo snapshot: data as of {demoStamp(PINNED_NOW)}. </strong>}
+              Not an official City of Philadelphia source. Data may be incomplete or out of date; check the linked
+              record. Sources: <a href="https://opendataphilly.org/datasets/street-lane-closures/"
+              target="_blank" rel="noopener">City of Philadelphia</a> permits and closure notices, race
+              organizers, <a href="https://www.visitphilly.com/" target="_blank" rel="noopener">visitphilly.com</a>,{" "}
+              <a href="https://www.ticketmaster.com/" target="_blank" rel="noopener">Ticketmaster</a>.
+            </span>
+          </p>
+          <p className="fine-row">
+            <span className="fine-give fine-privacy" title="PENN sets no cookies and shows no ads. Questions you ask are sent to NVIDIA Nemotron on Nebius to answer them.">
+              Privacy: no cookies, no ads; questions are sent to NVIDIA Nemotron on Nebius.
+            </span>
+            {/* Map credits. OpenStreetMap asks for visible credit; the neighborhood outlines are CC BY 4.0,
+                which requires naming their author. */}
+            <span className="fine-credits">
+              <a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a>{" "}
+              <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">© OpenMapTiles</a>{" "}
+              <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>
+              {" · "}Neighborhoods © <a href="https://opendataphilly.org/datasets/philadelphia-neighborhoods/" target="_blank"
+              rel="noopener">Robert Cheetham</a>, <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank"
+              rel="noopener">CC BY 4.0</a>
+            </span>
+          </p>
+        </div>
       </div>
     </main>
   );

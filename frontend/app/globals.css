@@ -11,7 +11,9 @@
   --construction: #E35205; --event: #5A3FC0; --blockparty: #0E9F6E; --parking: #6B7280; --listing: #1D4ED8; --ticketed: #A3166F;
   --ui: "Public Sans", "Segoe UI", system-ui, sans-serif;
   --display: "Barlow Condensed", "Arial Narrow", sans-serif-condensed, sans-serif;
-  --bar-h: 64px;
+  --fine-h: 18px;           /* one row of fine print */
+  --fine-rows: 2;
+  --bar-h: calc(64px + var(--fine-rows) * var(--fine-h));
   --panel-w: 380px;
   --topbar-h: 50px;
   --rail-w: 400px;          /* the answer's left column on desktop */
@@ -230,8 +232,20 @@ button { cursor: pointer; }
 .legend-reset { flex: none; font-weight: 700; padding-left: 6px; }
 .legend-more:hover, .legend-reset:hover { background: var(--wash); }
 
+/* --bar-h is the whole bottom bar: the ask row, then the fine print along the page's bottom edge */
+.fine-print {
+  pointer-events: auto; height: calc(var(--fine-rows) * var(--fine-h)); padding: 0 12px;
+  background: var(--ink); color: #A9B1BD; font-size: 11.5px;
+  border-top: 1px solid #2B3443;
+}
+.fine-row { margin: 0; height: var(--fine-h); line-height: var(--fine-h); display: flex; gap: 16px; white-space: nowrap; }
+/* The disclaimer and privacy line give way (ellipsis, full text on hover); the map credits never do. */
+.fine-give { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fine-credits { flex: none; }
+.fine-demo { color: var(--hl); font-weight: 700; }
+.fine-print a { color: #D5DAE1; text-underline-offset: 2px; }
 .askbar {
-  pointer-events: auto; height: var(--bar-h); background: var(--ink); color: #fff;
+  pointer-events: auto; height: calc(var(--bar-h) - var(--fine-rows) * var(--fine-h)); background: var(--ink); color: #fff;
   display: flex; align-items: center; gap: 10px; padding: 0 12px;
 }
 .askbar input {
@@ -297,16 +311,21 @@ button { cursor: pointer; }
 
 /* ---- phones ---- */
 @media (max-width: 720px) {
-  :root { --bar-h: calc(60px + env(safe-area-inset-bottom)); }
-  .topbar { top: 8px; left: 8px; right: 8px; flex-direction: row; align-items: center; justify-content: space-between; padding: 6px 8px 6px 12px; }
-  .tagline, .seg-label { display: none; }
+  :root { --bar-h: calc(60px + var(--fine-rows) * var(--fine-h) + env(safe-area-inset-bottom)); }
+  .topbar { top: 8px; left: 8px; right: 8px; height: auto; justify-content: space-between; padding: 6px 8px 6px 12px; }
+  .tagline, .seg-label, .fresh { display: none; }
   .wordmark { font-size: 22px; }
   .segmented button { padding: 3px 8px; font-size: 13px; }
   .maplibregl-ctrl-top-right { top: 64px; }
   .maplibregl-ctrl-top-right .maplibregl-ctrl-group { display: none; }
   .panel-open .maplibregl-ctrl-top-right { right: 8px; }
 
-  .askbar { align-items: flex-start; padding: 9px 8px calc(9px + env(safe-area-inset-bottom)); gap: 8px; }
+  /* The phone's home-indicator inset goes under the fine print, the bottom-most row. */
+  .askbar { align-items: flex-start; padding: 9px 8px; gap: 8px; height: calc(var(--bar-h) - var(--fine-rows) * var(--fine-h) - env(safe-area-inset-bottom)); }
+  /* The same two rows, but the second keeps only the map credits, which must stay visible. */
+  .fine-print { height: calc(var(--fine-rows) * var(--fine-h) + env(safe-area-inset-bottom)); padding: 0 8px env(safe-area-inset-bottom); }
+  .fine-privacy { display: none; }
+  .fine-credits { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .ask-btn { padding: 0 16px; }
   .askbar input { font-size: 16px; padding: 0 10px; }
   .dock-row { flex-direction: column-reverse; align-items: stretch; padding: 0 8px; gap: 8px; }
