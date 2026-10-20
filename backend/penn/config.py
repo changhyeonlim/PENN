@@ -50,6 +50,10 @@ class Settings:
     # name an earlier .env used.
     ticketmaster_api_key: str = field(default_factory=lambda: (
         os.getenv("TICKETMASTER_API_KEY") or os.getenv("TICKETMASTER_API") or "").strip())
+    # Tavily web search, the fallback for events PENN has no record of (p5-09). TAVILY_API is the name
+    # the .env already used.
+    tavily_api_key: str = field(default_factory=lambda: (
+        os.getenv("TAVILY_API_KEY") or os.getenv("TAVILY_API") or "").strip())
 
     # Demo mode: a fixed "now" (ISO 8601 with offset, e.g. 2026-10-17T09:00:00-04:00) so a frozen
     # snapshot (jobs/freeze_demo.py, CLICKHOUSE_DB=penn_demo) answers the same way on any day.
