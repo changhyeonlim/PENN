@@ -1,14 +1,14 @@
 "use client";
 
 import maplibregl from "maplibre-gl";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AnswerText, citationOrder } from "@/components/AnswerText";
 import { Legend } from "@/components/Legend";
 import { PermitPanel } from "@/components/PermitPanel";
 import {
   activeToday, appNow, askAgent, category, extent, HOOD, isMinor, isOver, MINOR_ZOOM, PARK, isListing, COLOR, daysAway, flagDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, ROAD, shortWhen, STRENGTH,
   strengthBand, streetCase, tidy, todayStatus, wktToGeometry,
-  type AgentReply, type Category, type Extent, type PennEvent, type View,
+  type AgentReply, type AskContext, type AskTurn, type Category, type Extent, type PennEvent, type View,
 } from "@/lib/api";
 
 // OpenFreeMap Positron: a quiet vector basemap with street names and no house numbers or shop labels.
@@ -149,6 +149,14 @@ export default function Page() {
 
   const [question, setQuestion] = useState("");
   const [asked, setAsked] = useState("");
+  const sent = useRef<string[]>([]);   // questions already asked, oldest first; Up and Down walk them
+  // The conversation PENN remembers: the last few exchanges and the place and window the last answer
+  // used, so "what about next week?" knows where. "New topic" (or clearing the pin) forgets it.
+  const turns = useRef<AskTurn[]>([]);
+  const convo = useRef<AskContext | null>(null);
+  const [onTopic, setOnTopic] = useState(false);
+  const pickFor = useRef<string | null>(null);   // the question waiting for a point the user is now picking
+  const sentAt = useRef(-1);           // index into sent while walking, -1 when typing fresh
   const [status, setStatus] = useState<Status>("idle");
   const [place, setPlace] = useState<Place | null>(null);
   const [reply, setReply] = useState<AgentReply | null>(null);
@@ -539,7 +547,8 @@ export default function Page() {
     (map.current?.getSource("cited") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features: [] });
 
     // The place resolves in milliseconds without the model: move the map while the answer is written.
-    const agent = askAgent(at ? { question: q, lon: at[0], lat: at[1] } : { question: q });
+    const memory = { history: turns.current.slice(-3), context: convo.current };
+    const agent = askAgent(at ? { question: q, lon: at[0], lat: at[1], ...memory } : { question: q, ...memory });
     let flew = false;
     let placeView: View | null = null;
     if (at) {
@@ -560,7 +569,9 @@ export default function Page() {
       if (stale()) return;
       setReply(r);
       setStatus("done");
-      if (r.needs_pin) return;   // the sheet offers an optional pin; nothing is forced
+      turns.current = [...turns.current, { question: q, answer: r.answer ?? r.message ?? "" }].slice(-3);
+      if (r.context) convo.current = r.context;
+      setOnTopic(true);
       if (r.outside) return;
       if (r.place || r.window) setPlace(p => ({ name: r.place ?? p?.name ?? null, window: r.window ?? p?.window }));
       const view: View | null | undefined = r.view;
@@ -575,14 +586,44 @@ export default function Page() {
       if (stale()) return;
       setStatus("error");
       setReply({ message: `PENN could not answer: ${(err as Error).message}. Check that the PENN API is running, then ask again.` });
+      setQuestion(cur => cur || q);   // give the question back so asking again is one click
     }
   }
 
-  // A pin picked because PENN asked for one answers the waiting question.
+  // The box empties once a question is sent; the question stays above its answer in the sheet.
+  function submit() {
+    const q = question.trim();
+    if (!q) return;
+    if (sent.current[sent.current.length - 1] !== q) sent.current.push(q);
+    sentAt.current = -1;
+    setQuestion("");
+    ask(q);
+  }
+
+  // Up brings back earlier questions to edit or resend, Down walks forward again, as in a terminal.
+  function recall(e: ReactKeyboardEvent<HTMLInputElement>) {
+    const list = sent.current;
+    if (!list.length || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    if (sentAt.current === -1 && (e.key === "ArrowDown" || question)) return;   // never overwrite a draft
+    e.preventDefault();
+    const at = e.key === "ArrowUp"
+      ? (sentAt.current === -1 ? list.length - 1 : Math.max(0, sentAt.current - 1))
+      : sentAt.current + 1;
+    sentAt.current = at >= list.length ? -1 : at;
+    setQuestion(sentAt.current === -1 ? "" : list[sentAt.current]);
+  }
+
+  // A pin picked from "Pick a point on the map" under PENN's question answers the waiting question.
   useEffect(() => {
-    if (pin && reply?.needs_pin && asked) ask(asked, pin);
+    if (pin && pickFor.current) { const q = pickFor.current; pickFor.current = null; ask(q, pin); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pin]);
+
+  // Start fresh: PENN forgets the earlier questions and the place and window they used.
+  function forget() {
+    turns.current = []; convo.current = null; pickFor.current = null;
+    setOnTopic(false);
+  }
 
   const onCite = (id: string) => {
     const e = known.current.get(id);
@@ -643,6 +684,10 @@ export default function Page() {
                 {place?.name ? <span className="plate">{place.name}</span>
                   : busy ? <span className="plate pending">Finding the place</span> : null}
                 <span className="sheet-when">{reply?.window ?? place?.window ?? ""}</span>
+                {onTopic && !busy && (
+                  <button type="button" className="text-btn" title="PENN forgets the earlier questions and their place"
+                    onClick={forget}>New topic</button>
+                )}
                 <button type="button" className="text-btn sheet-toggle" aria-expanded={sheetOpen}
                   onClick={() => setSheetOpen(o => !o)}>{sheetOpen ? "Hide answer" : "Show answer"}</button>
               </div>
@@ -655,19 +700,17 @@ export default function Page() {
                       {status === "locating" ? "Finding the place on the map" : `Reading permits${place?.name ? ` near ${place.name}` : ""}`}
                     </div>
                   )}
-                  {reply?.needs_pin && (
-                    <div className="sheet-msg">
-                      <p>PENN could not find a place in your question. Add a corner, like &ldquo;Kelly Dr and Fairmount
-                        Ave&rdquo;, or a neighborhood, like &ldquo;Fairmount&rdquo;. Or pick a point on the map to search around it.</p>
-                      <button type="button" className="text-btn" onClick={() => setPicking(true)}>Pick a point on the map</button>
-                    </div>
-                  )}
-                  {reply?.message && !reply.needs_pin && <p className={reply.outside || status === "error" ? "sheet-error" : "sheet-msg"}>{reply.message}</p>}
+                  {reply?.message && <p className={reply.outside || status === "error" ? "sheet-error" : "sheet-msg"}>{reply.message}</p>}
                   {reply?.answer && (
                     <>
                       {kindNote && <p className="kind-note">{kindNote}</p>}
                       <AnswerText text={reply.answer} titles={titles} selected={selected?.event_id ?? null} onCite={onCite} web={reply.web} />
-                      {order.length > 0 && <p className="sheet-foot">Numbers open the permit. Highlighted streets on the map are the ones cited.</p>}
+                      {order.length > 0 && <p className="sheet-foot">Numbers open the permit. Highlighted streets on the map are
+                        the ones cited; other records turn grey until you hide the answer.</p>}
+                      {reply.asked_back && !pin && (
+                        <button type="button" className="text-btn" onClick={() => { pickFor.current = asked; setPicking(true); }}>
+                          Pick a point on the map</button>
+                      )}
                     </>
                   )}
                 </div>
@@ -679,12 +722,12 @@ export default function Page() {
             loading={mapLoading && !events.length} />
         </div>
 
-        <form className="askbar" onSubmit={e => { e.preventDefault(); if (!busy) ask(question); }}>
+        <form className="askbar" onSubmit={e => { e.preventDefault(); if (!busy) submit(); }}>
           <label htmlFor="q" className="sr-only">Ask PENN about a street or corner</label>
           {pin ? (
             <span className="pin-chip">
               Pinned point
-              <button type="button" aria-label="Clear the pinned point" onClick={() => setPin(null)}>
+              <button type="button" aria-label="Clear the pinned point" onClick={() => { setPin(null); forget(); }}>
                 <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6m0-6L2 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
               </button>
             </span>
@@ -694,7 +737,8 @@ export default function Page() {
               <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M9 16s5-4.6 5-8.6A5 5 0 0 0 4 7.4C4 11.4 9 16 9 16z" fill="none" stroke="currentColor" strokeWidth="1.6" /><circle cx="9" cy="7.4" r="1.8" fill="currentColor" /></svg>
             </button>
           )}
-          <input id="q" ref={inputRef} value={question} onChange={e => setQuestion(e.target.value)} autoComplete="off"
+          <input id="q" ref={inputRef} value={question} onChange={e => { sentAt.current = -1; setQuestion(e.target.value); }}
+            onKeyDown={recall} autoComplete="off"
             placeholder={pin ? "Ask about the pinned point" : narrow ? "Ask about a street or corner" : "Ask about a street or corner, like Spruce and 15th next week"} />
           <button type="submit" className="ask-btn" disabled={!question.trim() || busy}>{busy ? "Asking" : "Ask"}</button>
         </form>

@@ -13,9 +13,16 @@ export type View = { center: [number, number]; bounds: [[number, number], [numbe
 
 export type Located = { found: boolean; place: string | null; view?: View; window?: string };
 
+/** One earlier exchange, sent back so PENN can read follow-ups ("what about next week?"). */
+export type AskTurn = { question: string; answer: string };
+/** The place and window the last answer used, as /agent returned it; sent back as is. */
+export type AskContext = Record<string, unknown>;
+
 export type AgentReply = {
-  answer?: string; notes?: string[]; needs_pin?: boolean; outside?: boolean; message?: string;
-  place?: string | null; window?: string; window_kind?: "before_records" | "past" | "current" | "future";
+  answer?: string; notes?: string[]; outside?: boolean; message?: string;
+  asked_back?: boolean;          // nothing was searched: PENN asked where, or chatted; offer a pin
+  context?: AskContext;
+  place?: string | null; window?: string | null; window_kind?: "before_records" | "past" | "current" | "future" | null;
   start?: string; end?: string; view?: View | null; model?: string | null; tools?: string[]; cited?: string[];
   web?: { id: string; title: string; url: string; site: string }[];   // web pages the answer cites (p5-09)
 };
@@ -29,7 +36,7 @@ export async function getJSON<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const locate = (q: string) => getJSON<Located>(`/locate?q=${encodeURIComponent(q)}`);
 
-export const askAgent = (body: { question: string; lat?: number; lon?: number }) =>
+export const askAgent = (body: { question: string; lat?: number; lon?: number; history?: AskTurn[]; context?: AskContext | null }) =>
   getJSON<AgentReply>("/agent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
 /** Parse the WKT the API returns into GeoJSON geometry (points and lines only). */
