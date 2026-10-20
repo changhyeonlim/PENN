@@ -6,9 +6,9 @@ import { AnswerText, citationOrder } from "@/components/AnswerText";
 import { Legend } from "@/components/Legend";
 import { PermitPanel } from "@/components/PermitPanel";
 import {
-  activeToday, appNow, askAgent, category, COLOR, daysAway, flagDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, ROAD, shortWhen, STRENGTH,
+  activeToday, appNow, askAgent, category, extent, HOOD, isMinor, isOver, MINOR_ZOOM, PARK, isListing, COLOR, daysAway, flagDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, ROAD, shortWhen, STRENGTH,
   strengthBand, streetCase, tidy, todayStatus, wktToGeometry,
-  type AgentReply, type Category, type PennEvent, type View,
+  type AgentReply, type Category, type Extent, type PennEvent, type View,
 } from "@/lib/api";
 
 // OpenFreeMap Positron: a quiet vector basemap with street names and no house numbers or shop labels.
@@ -16,15 +16,16 @@ const STYLE = "https://tiles.openfreemap.org/styles/positron";
 // Center City, river to river and Spring Garden to South St.
 const CENTER_CITY: [[number, number], [number, number]] = [[-75.1830, 39.9415], [-75.1415, 39.9620]];
 const MAX_CITED_ON_MAP = 30;
-const DATA_LAYERS = ["listings", "full", "event", "partial", "footway", "parking", "points", "cited-line"];
-const RANK: Record<Category, number> = { full: 0, event: 1, partial: 2, footway: 3, parking: 4, listing: 5 };
+const DATA_LAYERS = ["listings", "full", "lane", "sidewalk", "parking", "points", "points-minor", "cited-line"];
+// Lines by how much of the street they take, heaviest first; a no-parking curb line last.
+const LINE_RANK = (e: PennEvent) => (category(e) === "parking" ? 3 : { full: 0, lane: 1, sidewalk: 2 }[extent(e)]);
 const FLAG_ICON = "penn-flag";
 // The icon is drawn at 2x for sharp edges; 22 x 27 px on the map. Its pole's foot sits 3 px in from the left.
 const FLAG_PX = { w: 44, h: 54, ratio: 2, footX: 3 };
 const isPointGeom = (e: PennEvent) => /^(MULTI)?POINT/.test(e.geometry_wkt);
 // What a click or hover picks first where things overlap: a flag, then a dot, then lines by severity.
 // A marker is an explicit target; the street line under it can still be clicked beside it.
-const pickOrder = (e: PennEvent) => (category(e) === "listing" ? 0 : isPointGeom(e) ? 1 : 2 + RANK[category(e)]);
+const pickOrder = (e: PennEvent) => (isListing(category(e)) ? 0 : isPointGeom(e) ? 1 : 2 + LINE_RANK(e));
 // Neighborhood outlines: a slimmed copy of data/areas/philadelphia-neighborhoods.geojson (OpenDataPhilly),
 // the same boundaries the server uses when a question names a neighborhood.
 const HOODS_URL = "/neighborhoods.geojson";
@@ -44,9 +45,15 @@ const hoverWidth = (lo: number, hi: number) =>
 const isLine = ["!=", ["geometry-type"], "Point"] as maplibregl.FilterSpecification;
 const isPoint = ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]] as maplibregl.FilterSpecification;
 const ofCat = (c: Category) => ["all", isLine, ["==", ["get", "cat"], c]] as maplibregl.FilterSpecification;
+// A closure line of any reason at one weight (no-parking curb lines have their own layer).
+const ofExtent = (x: Extent) => ["all", isLine, ["!=", ["get", "cat"], "parking"], ["==", ["get", "ext"], x]] as maplibregl.FilterSpecification;
 // Full strength in effect today, then one step fainter per band of days away (STRENGTH in lib/api.ts).
 const todayOpacity = ["step", ["get", "days"], STRENGTH[0].opacity,
   ...STRENGTH.slice(1).flatMap(s => [s.from, s.opacity])] as unknown as maplibregl.ExpressionSpecification;
+const flagOpacity = ["max", 0.45, todayOpacity] as maplibregl.ExpressionSpecification;
+// Color says why: construction, an event or a block party (or a no-parking curb).
+const REASON_COLOR = ["match", ["get", "cat"], "event", COLOR.event, "blockparty", COLOR.blockparty,
+  "parking", COLOR.parking, COLOR.construction] as maplibregl.ExpressionSpecification;
 
 /** The map's own window. Questions resolve their own dates on the server and never change it. */
 function range(days: number): { start: string; end: string } {
@@ -57,7 +64,7 @@ function range(days: number): { start: string; end: string } {
 function toFeatures(events: PennEvent[]): GeoJSON.Feature[] {
   return events.flatMap(e => {
     const g = wktToGeometry(e.geometry_wkt);
-    return g ? [{ type: "Feature" as const, geometry: g, properties: { event_id: e.event_id, cat: category(e), days: daysAway(e) } }] : [];
+    return g ? [{ type: "Feature" as const, geometry: g, properties: { event_id: e.event_id, cat: category(e), ext: extent(e), days: daysAway(e) } }] : [];
   });
 }
 
@@ -236,26 +243,37 @@ export default function Page() {
         paint: { "line-color": HIGHLIGHT, "line-width": zoomWidth(12, 30), "line-opacity": 0.85, "line-blur": 1 } });
       add({ id: "selected-halo", type: "line", source: "selected", layout: round,
         paint: { "line-color": "#1B2433", "line-width": zoomWidth(9, 18), "line-opacity": 0.9 } });
-      add({ id: "cited-line", type: "line", source: "cited", filter: isLine, layout: round,
-        paint: { "line-opacity": todayOpacity, "line-color": ["get", "color"], "line-width": zoomWidth(2.5, 6) } });
-      // Least to most severe, so a full closure is drawn over a sidewalk permit on the same block.
-      add({ id: "parking", type: "line", source: "events", filter: ofCat("parking"),
-        paint: { "line-opacity": todayOpacity, "line-color": COLOR.parking, "line-width": hoverWidth(1.4, 3.5), "line-dasharray": [2.2, 1.6] } });
-      add({ id: "footway", type: "line", source: "events", filter: ofCat("footway"), layout: { "line-cap": "round" },
-        paint: { "line-opacity": todayOpacity, "line-color": COLOR.footway, "line-width": hoverWidth(1.8, 4.5), "line-dasharray": [0.05, 2] } });
-      add({ id: "partial", type: "line", source: "events", filter: ofCat("partial"), layout: round,
-        paint: { "line-opacity": todayOpacity, "line-color": COLOR.partial, "line-width": hoverWidth(2.2, 6) } });
-      add({ id: "event-casing", type: "line", source: "events", filter: ofCat("event"), layout: round,
-        paint: { "line-opacity": todayOpacity, "line-color": "#ffffff", "line-width": zoomWidth(4.5, 10.5) } });
-      add({ id: "event", type: "line", source: "events", filter: ofCat("event"), layout: round,
-        paint: { "line-opacity": todayOpacity, "line-color": COLOR.event, "line-width": hoverWidth(2.8, 7) } });
-      add({ id: "full-casing", type: "line", source: "events", filter: ofCat("full"), layout: round,
+      // Color says why (REASON_COLOR), weight says how much of the street: dots for the sidewalk, a thin line for one
+      // lane, a thick white-edged line for the full street. Lightest first, so a full closure draws over a sidewalk
+      // permit on the same block. The minor kinds start at MINOR_ZOOM (lib/api.ts), so the whole-city view shows the
+      // closures.
+      add({ id: "parking", type: "line", source: "events", filter: ofCat("parking"), minzoom: MINOR_ZOOM,
+        // A pair of thin rails, like a marked curb lane: a shape of its own beside the sidewalk's dots.
+        paint: { "line-opacity": todayOpacity, "line-color": REASON_COLOR, "line-width": hoverWidth(1, 1.8),
+          "line-gap-width": zoomWidth(2.2, 5) } });
+      add({ id: "sidewalk", type: "line", source: "events", filter: ofExtent("sidewalk"), minzoom: MINOR_ZOOM, layout: { "line-cap": "round" },
+        paint: { "line-opacity": todayOpacity, "line-color": REASON_COLOR, "line-width": hoverWidth(1.8, 4.5), "line-dasharray": [0.05, 2] } });
+      add({ id: "lane", type: "line", source: "events", filter: ofExtent("lane"), minzoom: MINOR_ZOOM, layout: round,
+        paint: { "line-opacity": todayOpacity, "line-color": REASON_COLOR, "line-width": hoverWidth(1.8, 4.5) } });
+      // Where full closures overlap, an event draws over a block party, and both over construction.
+      const fullOrder = { ...round, "line-sort-key": ["match", ["get", "cat"], "event", 2, "blockparty", 1, 0] } as maplibregl.LineLayerSpecification["layout"];
+      add({ id: "full-casing", type: "line", source: "events", filter: ofExtent("full"), layout: round,
         paint: { "line-opacity": todayOpacity, "line-color": "#ffffff", "line-width": zoomWidth(5.5, 13) } });
-      add({ id: "full", type: "line", source: "events", filter: ofCat("full"), layout: round,
-        paint: { "line-opacity": todayOpacity, "line-color": COLOR.full, "line-width": hoverWidth(3.5, 9) } });
-      add({ id: "points", type: "circle", source: "events", filter: ["all", ["==", ["geometry-type"], "Point"], ["!=", ["get", "cat"], "listing"]],
-        paint: { "circle-opacity": todayOpacity, "circle-stroke-opacity": todayOpacity, "circle-color": ["match", ["get", "cat"], "full", COLOR.full, "event", COLOR.event, "partial", COLOR.partial,
-          "parking", COLOR.parking, COLOR.footway], "circle-radius": zoomWidth(3.5, 7), "circle-stroke-color": "#fff", "circle-stroke-width": 1.5 } });
+      add({ id: "full", type: "line", source: "events", filter: ofExtent("full"), layout: fullOrder,
+        paint: { "line-opacity": todayOpacity, "line-color": REASON_COLOR, "line-width": hoverWidth(3.5, 9) } });
+      // The answer's own lines over every city layer, a little heavier than the rest, so a cited line still reads
+      // clearly on its highlighter stroke.
+      add({ id: "cited-line", type: "line", source: "cited", filter: isLine, layout: round,
+        paint: { "line-opacity": todayOpacity, "line-color": ["get", "color"], "line-width": zoomWidth(3.5, 8) } });
+      const dot: maplibregl.CircleLayerSpecification["paint"] = { "circle-opacity": todayOpacity, "circle-stroke-opacity": todayOpacity,
+        "circle-color": REASON_COLOR, "circle-radius": zoomWidth(3.5, 7), "circle-stroke-color": "#fff", "circle-stroke-width": 1.5 };
+      const isDot = ["==", ["geometry-type"], "Point"] as maplibregl.ExpressionSpecification;
+      // A no-parking, one-lane or sidewalk-only spot is minor, like its line (isMinor in lib/api.ts).
+      const minorDot = ["any", ["==", ["get", "cat"], "parking"], ["!=", ["get", "ext"], "full"]] as maplibregl.ExpressionSpecification;
+      add({ id: "points-minor", type: "circle", source: "events", minzoom: MINOR_ZOOM,
+        filter: ["all", isDot, minorDot] as maplibregl.FilterSpecification, paint: dot });
+      add({ id: "points", type: "circle", source: "events",
+        filter: ["all", isDot, ["!", ["in", ["get", "cat"], ["literal", ["listing", "ticketed"]]]], ["!", minorDot]] as maplibregl.FilterSpecification, paint: dot });
       // Below the basemap's labels, so street names win where they collide.
       add({ id: "hood-label", type: "symbol", source: "hoods", minzoom: 12,
         layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Italic"], "text-size": zoomWidth(11, 14),
@@ -271,7 +289,7 @@ export default function Page() {
       m.addLayer({ id: "listings", type: "symbol", source: "events", filter: ["==", ["get", "cat"], "listing"],
         layout: { "icon-image": FLAG_ICON, "icon-anchor": "bottom-left", "icon-offset": [-FLAG_PX.footX, 0],
           "icon-allow-overlap": true, "icon-ignore-placement": true, "symbol-sort-key": ["-", 0, ["get", "days"]] },   // today's on top
-        paint: { "icon-opacity": ["max", 0.45, todayOpacity] } });
+        paint: { "icon-opacity": flagOpacity } });
       showHoodsOn(m, showHoodsRef.current);
       load();
     };
@@ -555,6 +573,10 @@ function showHoodsOn(m: maplibregl.Map, on: boolean) {
 const MAX_TIP_PLACES = 2;
 
 /** The hover card: category, a short title, the first blocks, and when. Long permits list dozens of blocks. */
+// How much of the street a construction permit takes, after its reason on the hover card. A block party and an
+// event closure close the street; no parking is a curb rule.
+const HOW_MUCH: Record<Extent, string> = { full: "full street closed", lane: "one lane closed", sidewalk: "sidewalk only" };
+
 function TipBody({ e }: { e: PennEvent }) {
   const cat = category(e);
   if (cat === "listing") return <ListingTip e={e} />;
@@ -564,7 +586,7 @@ function TipBody({ e }: { e: PennEvent }) {
   const unit = places.every(p => /\bblock\b/i.test(p)) ? "block" : "location";
   return (
     <>
-      <span className={`tip-cat cat-${cat}`}>{LABEL[cat]}</span>
+      <span className={`tip-cat cat-${cat}`}>{LABEL[cat]}{cat === "construction" && <span className="tip-src">, {HOW_MUCH[extent(e)]}</span>}</span>
       {title && <span className="tip-title">{title.length > 70 ? `${title.slice(0, 68).trimEnd()}…` : title}</span>}
       {places.length > 0 && (
         <ul className={`tip-places cat-${cat}`}>

@@ -1,28 +1,40 @@
 import { useEffect, useState } from "react";
-import { CATEGORIES, flagDataUrl, HIGHLIGHT, MEANING, ROAD, STRENGTH, type Category } from "@/lib/api";
+import { CATEGORIES, COLOR, EXTENTS, flagDataUrl, HIGHLIGHT, HOOD, isListing, MEANING, MINOR, PARK, ROAD, STRENGTH, type Category, type Extent } from "@/lib/api";
 
-/** A small drawing of each line style, matching the map layers. */
-export function Swatch({ cat, size = 28, opacity = 1 }: { cat: Category | "cited"; size?: number; opacity?: number }) {
-  if (cat === "listing") {   // the map's flag marker, centred in the swatch box
+// The weight samples are drawn in a neutral ink: the weight means the same in every reason's color.
+const WEIGHT_INK = "#5A6474";
+const SHORT: Record<Extent, string> = { full: "Closed", lane: "1 lane", sidewalk: "Sidewalk" };
+
+/** A small drawing of each line style, matching the map layers: the reason's color at the record's weight.
+ *  `color` overrides the reason's color, for the key's weight samples, which apply to every reason. */
+export function Swatch({ cat, ext = "full", size = 28, opacity = 1, color }:
+  { cat: Category | "cited"; ext?: Extent; size?: number; opacity?: number; color?: string }) {
+  if (cat !== "cited" && isListing(cat)) {   // the map's flag marker, centred in the swatch box
     return (
-      <span className="swatch swatch-flag" style={{ width: size, opacity }} aria-hidden="true">
+      // Opacity inline only when asked for, so a switched-off key row can still fade it from the stylesheet.
+      <span className="swatch swatch-flag" style={{ width: size, ...(opacity !== 1 && { opacity }) }} aria-hidden="true">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={flagDataUrl(13, 16)} width={13} height={16} alt="" />
       </span>
     );
   }
-  const c = CATEGORIES.find(x => x.key === cat);
+  const ink = color ?? (cat === "cited" ? COLOR.construction : COLOR[cat]);
   const y = 7;
   return (
     <svg className="swatch" width={size} height="14" viewBox={`0 0 ${size} 14`} aria-hidden="true" opacity={opacity}>
       {cat === "cited" && <line x1="3" y1={y} x2={size - 3} y2={y} stroke={HIGHLIGHT} strokeWidth="10" strokeLinecap="round" />}
-      {cat === "cited" && <line x1="3" y1={y} x2={size - 3} y2={y} stroke="#D46A00" strokeWidth="3" />}
-      {(cat === "full" || cat === "event") && <line x1="1" y1={y} x2={size - 1} y2={y} stroke="#fff" strokeWidth={cat === "full" ? 9 : 7} />}
-      {cat === "full" && <line x1="2" y1={y} x2={size - 2} y2={y} stroke={c!.color} strokeWidth="6" />}
-      {cat === "event" && <line x1="2" y1={y} x2={size - 2} y2={y} stroke={c!.color} strokeWidth="4.5" />}
-      {cat === "partial" && <line x1="2" y1={y} x2={size - 2} y2={y} stroke={c!.color} strokeWidth="3.5" />}
-      {cat === "footway" && <line x1="3" y1={y} x2={size - 2} y2={y} stroke={c!.color} strokeWidth="2.6" strokeLinecap="round" strokeDasharray="0.1 5" />}
-      {cat === "parking" && <line x1="2" y1={y} x2={size - 2} y2={y} stroke={c!.color} strokeWidth="2.2" strokeDasharray="5 3" />}
+      {cat === "cited" && <line x1="3" y1={y} x2={size - 3} y2={y} stroke={ink} strokeWidth="3" />}
+      {cat === "parking" && <>
+        <line x1="2" y1={y - 2.5} x2={size - 2} y2={y - 2.5} stroke={ink} strokeWidth="1.4" />
+        <line x1="2" y1={y + 2.5} x2={size - 2} y2={y + 2.5} stroke={ink} strokeWidth="1.4" />
+      </>}
+      {cat !== "cited" && cat !== "parking" && ext === "full" && <>
+        <line x1="1" y1={y} x2={size - 1} y2={y} stroke="#fff" strokeWidth="9" />
+        <line x1="2" y1={y} x2={size - 2} y2={y} stroke={ink} strokeWidth="6" />
+      </>}
+      {cat !== "cited" && cat !== "parking" && ext === "lane" && <line x1="2" y1={y} x2={size - 2} y2={y} stroke={ink} strokeWidth="2.6" />}
+      {cat !== "cited" && cat !== "parking" && ext === "sidewalk" &&
+        <line x1="3" y1={y} x2={size - 2} y2={y} stroke={ink} strokeWidth="2.6" strokeLinecap="round" strokeDasharray="0.1 5" />}
     </svg>
   );
 }
@@ -90,10 +102,17 @@ export function Legend({ counts, bands, citedCount, loading, hoods, onHoods }: P
 
           {explain && (
             <div className="legend-explain">
+              <p className="legend-sub">Line weight: how much of the street</p>
+              <ul>
+                {EXTENTS.map(x => (
+                  <li key={x.key}><Swatch cat="construction" ext={x.key} color={WEIGHT_INK} /><span className="legend-label">{x.label}</span>
+                    <span className="legend-meaning">{x.detail}</span></li>
+                ))}
+              </ul>
               <p className="legend-sub">Strength: how close to today</p>
               <ul>
                 {STRENGTH.map((b, i) => (
-                  <li key={b.from}><Swatch cat="full" opacity={b.opacity} /><span className="legend-label">{b.label}</span>
+                  <li key={b.from}><Swatch cat="construction" opacity={b.opacity} /><span className="legend-label">{b.label}</span>
                     <span className="legend-count">{bands[i] ?? 0}</span></li>
                 ))}
               </ul>

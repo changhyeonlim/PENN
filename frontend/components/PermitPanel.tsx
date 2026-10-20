@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import {
-  activeToday, category, daysAway, DETAIL, fade, LABEL, LISTED_BY, listingWhere, streetCase, tidy, todayStatus, typeLabel, when, type PennEvent,
+  activeToday, category, daysAway, EXTENTS, extent, isListing, shortWhen, DETAIL, fade, LABEL, LISTED_BY, listingWhere, streetCase, tidy, todayStatus, typeLabel, when, type PennEvent,
 } from "@/lib/api";
 import { Swatch } from "./Legend";
 
@@ -45,7 +45,7 @@ export function PermitPanel({ open, choices, event, loading, error, citedNumber,
               return (
                 <li key={c.event_id}>
                   <button type="button" onClick={() => onPick(c)}>
-                    <Swatch cat={cat} opacity={fade(daysAway(c))} />
+                    <Swatch cat={cat} ext={extent(c)} opacity={fade(daysAway(c))} />
                     <span>
                       <span className="choice-cat">{LABEL[cat]}</span>
                       <span className="choice-title">{tidy(c.title)}</span>
@@ -70,7 +70,7 @@ function Detail({ e, loading, error, cited }: { e: PennEvent; loading: boolean; 
   const title = tidy(e.title).replace(/\s*extend(?:ed)? from permit\s*#?\s*[\d-]+/gi, "").trim();
   return (
     <div className="detail">
-      <div className={`cat-tag cat-${cat}`}><Swatch cat={cat} /> {LABEL[cat]}</div>
+      <div className={`cat-tag cat-${cat}`}><Swatch cat={cat} ext={extent(e)} /> {LABEL[cat]}</div>
       <h2>{title || typeLabel(e.event_type)}</h2>
       {extends_.length > 0 && <p className="sub extends">Extends permit {extends_.join(" and ")}</p>}
       {cited > 0 && <p className="cited-flag"><span className="cite static">{cited}</span> Cited in the answer</p>}
@@ -79,7 +79,9 @@ function Detail({ e, loading, error, cited }: { e: PennEvent; loading: boolean; 
         <div><dt>Where</dt><dd>{where ? where.split(/;\s*/).map((s, i) => <span key={i} className="where-line">{s}</span>) : "Location not described"}</dd></div>
         <div><dt>When</dt><dd>{w.range}{w.note && <span className="sub">{w.note}</span>}
           <span className={`today${activeToday(e) ? " on" : ""}`}>{todayStatus(e)}.</span></dd></div>
-        <div><dt>Closure</dt><dd>{DETAIL[cat]}{(cat === "event" || cat === "parking") && e.occupancy && <span className="sub">{e.occupancy}</span>}</dd></div>
+        {/* How much of the street, in plain words, with the permit's own term under it. */}
+        <div><dt>Closure</dt><dd>{cat === "event" || cat === "parking" ? DETAIL[cat] : EXTENTS.find(x => x.key === extent(e))!.detail}
+          {cat !== "event" && e.occupancy && <span className="sub">{e.occupancy}</span>}</dd></div>
         <div><dt>Type</dt><dd>{typeLabel(e.event_type)}</dd></div>
         <div><dt>Who</dt><dd>{e.organization || "Not listed"}</dd></div>
         <div><dt>Record</dt><dd>

@@ -51,44 +51,79 @@ export function wktToGeometry(wkt: string): GeoJSON.Geometry | null {
   return null;
 }
 
-export type Category = "full" | "partial" | "footway" | "parking" | "event" | "listing";
+/** Why a street is affected, which is what people ask: construction, an event, or a block party. No parking and
+ *  the listings are their own kinds, since none of them closes a street. Color on the map. */
+export type Category = "construction" | "event" | "blockparty" | "parking" | "listing";
+/** How much of the street a closure takes, as its permit lists it. Line weight on the map. */
+export type Extent = "full" | "lane" | "sidewalk";
+/** Listings mark something happening at a place, never a closure: visitphilly picks. */
+export const isListing = (c: Category) => c === "listing";
 
 /** Sources of events that happen at a place without closing a street: drawn as flags, never as closures. */
 export const LISTING_SOURCES = ["visitphilly"];
 export const LISTED_BY: Record<string, string> = { visitphilly: "visitphilly.com" };
 
-/** Map layer category. Footway is styled apart so a sidewalk shed never reads as a road closure. */
+/** The record's reason. Road, utility and building work are all construction; so is the odd other permit (a
+ *  banner, an unmapped work type), since every one of them is work in the street. */
 export function category(e: PennEvent): Category {
   if (LISTING_SOURCES.includes(e.source)) return "listing";
-  if (e.event_type === "event") return "event";
+  if (e.event_type === "event" || e.event_type === "film_shoot") return "event";
   if (e.event_type === "parking_restriction") return "parking";
-  if (e.occupancy === "Full Closure") return "full";
-  if (e.occupancy === "Footway") return "footway";
-  return "partial";
+  if (e.event_type === "block_party") return "blockparty";
+  return "construction";
 }
 
-/** Most severe first: the order of the legend, and of the layers from top down. */
+/** A permit's occupancy as a line weight. An announced event closure lists none: it closes the street. */
+export function extent(e: PennEvent): Extent {
+  if (e.occupancy === "Footway") return "sidewalk";
+  if (e.occupancy === "Partial Closure") return "lane";
+  return "full";
+}
+
+/** The reasons, then the kinds that close nothing: the order of the key. Construction is work-zone orange, the
+ *  color of cones and "Road Work Ahead" signs; block parties are green, across the color wheel from it, so the
+ *  two never blur on a thin line (rose did); no parking is a neutral grey, since it closes nothing and teal sat
+ *  too close to the green. */
 export const CATEGORIES: { key: Category; color: string; label: string; detail: string }[] = [
-  { key: "full", color: "#C8102E", label: "Street closed", detail: "Full closure permit" },
+  { key: "construction", color: "#E35205", label: "Construction", detail: "Road, utility or building work permit" },
   { key: "event", color: "#5A3FC0", label: "Event closure", detail: "Announced by the City for an event" },
-  { key: "partial", color: "#D46A00", label: "Lane closed", detail: "Partial closure permit" },
-  { key: "footway", color: "#3F4A5A", label: "Sidewalk only", detail: "Footway permit; the road stays open" },
-  { key: "parking", color: "#0B7A8A", label: "No parking", detail: "Parking or loading restriction" },
-  { key: "listing", color: "#1D4ED8", label: "Event listing", detail: "No street closure listed" },
+  { key: "blockparty", color: "#0E9F6E", label: "Block party", detail: "Block party permit" },
+  { key: "parking", color: "#6B7280", label: "No parking", detail: "Parking or loading restriction" },
+  { key: "listing", color: "#1D4ED8", label: "Event listing", detail: "visitphilly.com pick; no street closure listed" },
 ];
 /** Plain-language meaning of each category, for the key's explanation. */
 export const MEANING: Record<Category, string> = {
-  full: "The permit allows closing the whole street to traffic.",
-  event: "The City announced the street closes for an event.",
-  partial: "The permit allows closing a lane; traffic still gets through.",
-  footway: "Sidewalk work, such as a shed or scaffold. The road stays open.",
+  construction: "Road work, utility work (gas, water, electric) or building work (dumpsters, sheds, cranes).",
+  event: "The City announced the street closes for an event, such as a race or a parade.",
+  blockparty: "A block party permit closes the block to traffic for the party.",
   parking: "Parking or loading is restricted at the curb.",
-  listing: "Something happening at this place, listed by visitphilly.com. A listing is not a street closure.",
+  listing: "An editor's pick on visitphilly.com: something happening at this place. A listing is not a street closure.",
 };
+/** The line weights, heaviest first, with what each means for getting through. */
+export const EXTENTS: { key: Extent; label: string; detail: string }[] = [
+  { key: "full", label: "Full street", detail: "Closed to traffic" },
+  { key: "lane", label: "One lane", detail: "A lane is closed; traffic still gets through" },
+  { key: "sidewalk", label: "Sidewalk", detail: "Sidewalk only; the road stays open" },
+];
 /** Basemap road colors, set over Positron's so highways read apart from streets (see page.tsx). Every other road
  * class is drawn as one plain street: OpenStreetMap's primary/secondary/tertiary/residential tags change block by
  * block on the same Philadelphia street, so a major-vs-local split looks random. */
-export const ROAD = { highway: "#B4C2D3", highwayEdge: "#8798AE", street: "#FFFFFF" };
+export const ROAD = { highway: "#B4C2D3", highwayEdge: "#8798AE", street: "#FFFFFF", streetEdge: "#D3D8DF" };
+/** Parks and woods as a pale olive, over Positron's near-invisible grey-green: enough to find Rittenhouse Square
+ * or Fairmount Park, quiet enough that no permit color has to compete with it. */
+export const PARK = { park: "#DCE1BC", wood: "#D0D7AC" };
+/** Neighborhood outlines: slate, not green, so they read apart from the parks and from the sign-green outline of
+ * the neighborhood an answer is about. */
+export const HOOD = { line: "#56657D", label: "#46546B" };
+/** Zoomed out, the map shows only what closes a whole street. One-lane and sidewalk permits and no-parking
+ * curbs, three in four of the lines, wait for street zoom: drawn together across a neighborhood they bury the
+ * closures people plan around, and at street level they are what someone parking or walking needs. */
+export const MINOR: readonly Category[] = ["parking"];
+export const MINOR_ZOOM = 15;
+export const isMinor = (e: PennEvent) => {
+  const c = category(e);
+  return !isListing(c) && (MINOR.includes(c) || extent(e) !== "full");
+};
 /** A permit's strength by days from today (see daysAway): distinct steps, not a smooth fade, so each reads apart. */
 export const STRENGTH = [
   { from: 0, opacity: 1, label: "In effect today" },

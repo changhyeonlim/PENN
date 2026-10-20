@@ -7,7 +7,8 @@
   --surface: #FFFFFF;
   --sign: #1E5B44;          /* street-name sign green: the place an answer is about */
   --hl: #FFD43B;            /* highlighter: what the answer cites */
-  --full: #C8102E; --event: #5A3FC0; --partial: #D46A00; --footway: #3F4A5A; --parking: #0B7A8A; --listing: #1D4ED8;
+  /* why a street is affected (CATEGORIES in lib/api.ts) */
+  --construction: #E35205; --event: #5A3FC0; --blockparty: #0E9F6E; --parking: #6B7280; --listing: #1D4ED8;
   --ui: "Public Sans", "Segoe UI", system-ui, sans-serif;
   --display: "Barlow Condensed", "Arial Narrow", sans-serif-condensed, sans-serif;
   --bar-h: 64px;
@@ -83,8 +84,9 @@ button { cursor: pointer; }
 .tip-note { display: block; color: var(--muted); font-size: 12px; }
 
 /* category text colors (also used for the panel tag) */
-.cat-full { color: var(--full); } .cat-event { color: var(--event); } .cat-partial { color: #A85400; }
-.cat-footway { color: var(--footway); } .cat-parking { color: var(--parking); } .cat-listing { color: var(--listing); }
+/* As text the orange and green are taken darker, to stay readable on white. */
+.cat-construction { color: #B23F00; } .cat-event { color: var(--event); } .cat-blockparty { color: #0A7A55; }
+.cat-parking { color: var(--parking); } .cat-listing { color: var(--listing); }
 .swatch { flex: none; display: block; }
 .swatch-flag { display: flex; justify-content: center; align-items: flex-end; height: 16px; }
 
