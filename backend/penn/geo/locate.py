@@ -1,17 +1,22 @@
 """Turn what the user said or clicked into H3 cells. The model never invents coordinates.
 
-Order: map click -> named area -> address/intersection (AIS geocoder) -> ask for a pin.
+Order: map click -> typed intersection (street centerline, offline) -> named area
+-> address (AIS geocoder) -> ask for a pin.
+The intersection goes before areas so "23rd and Fairmount" is the corner, not the
+Fairmount neighborhood.
 """
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
 
 from ..config import settings
-from .h3util import point_cell, polygon_cells, ring
+from . import intersections, landmarks
+from .h3util import line_cells, point_cell, polygon_cells, ring
 
 AREAS_DIR = Path(__file__).resolve().parents[3] / "data" / "areas"
 # Verify the AIS endpoint, key requirement and terms during recon.
@@ -22,8 +27,10 @@ AIS_URL = "https://api.phila.gov/ais/v1/search/{q}"
 class Resolved:
     cells: list[int] = field(default_factory=list)
     label: str = ""
-    method: str = ""          # click | area | geocode | none
+    method: str = ""          # click | intersection | landmark | area | geocode | outside | none
     needs_pin: bool = False
+    seg_ids: list[int] = field(default_factory=list)   # intersection legs (centerline seg_id)
+    point: tuple[float, float] | None = None            # (lon, lat) of a corner, address or click, for the map's marker
 
 
 NAME_KEYS = ("LISTNAME", "MAPNAME", "name", "NAME")  # OpenDataPhilly neighborhoods use LISTNAME
@@ -80,14 +87,80 @@ def areas() -> dict[str, list[int]]:
 
 def from_click(lon: float, lat: float, k: int = 1) -> Resolved:
     c = point_cell(lon, lat)
-    return Resolved(cells=ring(c, k), label=f"{lat:.5f}, {lon:.5f}", method="click")
+    cells = ring(c, k)
+    city = city_cells()
+    if city and not city.intersection(cells):          # the whole ring is past the city line
+        return outside(f"{lat:.5f}, {lon:.5f}")
+    return Resolved(cells=cells, label=f"{lat:.5f}, {lon:.5f}", method="click", point=(lon, lat))
+
+
+def from_intersection(hit: intersections.Intersection) -> Resolved:
+    """Cells along the legs (one block each way) plus the corner itself."""
+    lon, lat = hit.node
+    cells = {point_cell(lon, lat)}
+    for s in hit.legs:
+        cells.update(line_cells(s.coords))
+    return Resolved(cells=sorted(cells), label=hit.label, method="intersection", seg_ids=hit.seg_ids, point=(lon, lat))
+
+
+def from_landmark(lm: landmarks.Landmark) -> Resolved:
+    """A named place: its cells (a disk for a building or park, the segments' cells for a corridor)."""
+    return Resolved(cells=list(lm.cells), label=lm.name, method="landmark", point=lm.point)
+
+
+# Places people ask about that are outside the city. PENN's records stop at the city line, so
+# these are refused before any search ("no record" would wrongly suggest PENN looked).
+OUTSIDE = re.compile(r"\b(camden|new jersey|n\.?j\.?|cherry hill|pennsauken|upper darby|lower merion|cheltenham|"
+                     r"king of prussia|bala cynwyd|delaware county|delco|montgomery county|bucks county|"
+                     r"chester county|wilmington|trenton|princeton)\b", re.I)
+
+
+def city_cells() -> set[int]:
+    """Every H3 cell inside a Philadelphia neighborhood polygon: the city limits, at r9."""
+    global _CITY
+    if _CITY is None:
+        _CITY = {c for cells in areas().values() for c in cells}
+    return _CITY
+
+
+_CITY: set[int] | None = None
+
+
+def outside(label: str) -> Resolved:
+    return Resolved(method="outside", label=label)
+
+
+STREET_SUFFIX = re.compile(r"\s+(street|st|avenue|ave|av|road|rd|lane|ln|place|pl|boulevard|blvd|drive|dr|way|"
+                           r"terrace|ter|court|ct|pike)\b")
+
+
+def _names_street(area: str, after: str) -> bool:
+    """Whether the area name is the start of a real street's name ("Ludlow Street", "Rittenhouse St",
+    "Fairmount Ave"): then the user means the street, not the neighborhood, which may be across town."""
+    m = STREET_SUFFIX.match(after)
+    return bool(m and intersections.network().lookup(f"{area} {m.group(1)}")[0])
 
 
 def from_text(text: str, client: httpx.Client | None = None) -> Resolved:
+    if m := OUTSIDE.search(text):
+        return outside(m.group(0).title())
+    hit = intersections.find(text)
+    if hit:
+        return from_intersection(hit)
     t = text.strip().lower()
+    area = None
     for name, cells in areas().items():
-        if name in t:
-            return Resolved(cells=cells, label=name.title(), method="area")
+        m = re.search(rf"(?<![a-z]){re.escape(name)}(?![a-z])", t)   # whole words: "logan" not in "slogan"
+        if m and not _names_street(name, t[m.end():]):
+            area = (name, cells)
+            break
+    # A landmark (p3-10) named by a longer phrase than any neighborhood wins: "Rittenhouse Square" is the
+    # park, "Rittenhouse" the neighborhood; "the Art Museum" and "Kelly Drive" name no neighborhood at all.
+    lm = landmarks.best(text)
+    if lm and (area is None or lm[1] > len(area[0])):
+        return from_landmark(lm[0])
+    if area:
+        return Resolved(cells=area[1], label=area[0].title(), method="area")
     q = text.replace(" and ", " & ")
     try:
         c = client or httpx.Client(timeout=10)
