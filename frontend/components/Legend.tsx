@@ -14,7 +14,7 @@ export function Swatch({ cat, ext = "full", size = 28, opacity = 1, color }:
       // Opacity inline only when asked for, so a switched-off key row can still fade it from the stylesheet.
       <span className="swatch swatch-flag" style={{ width: size, ...(opacity !== 1 && { opacity }) }} aria-hidden="true">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={flagDataUrl(13, 16)} width={13} height={16} alt="" />
+        <img src={flagDataUrl(13, 16, cat)} width={13} height={16} alt="" />
       </span>
     );
   }

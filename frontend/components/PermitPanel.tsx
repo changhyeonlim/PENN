@@ -12,12 +12,16 @@ type Props = {
   loading: boolean;
   error: string;
   citedNumber: (id: string) => number;
+  /** The same event's other listings (a visitphilly pick and its Ticketmaster dates). */
+  partnersOf: (e: PennEvent) => PennEvent[];
+  /** Every date of the same show at the same venue (just the event itself when it has one). */
+  datesOf: (e: PennEvent) => PennEvent[];
   onPick: (e: PennEvent) => void;
   onBack: (() => void) | null;
   onClose: () => void;
 };
 
-export function PermitPanel({ open, choices, event, loading, error, citedNumber, onPick, onBack, onClose }: Props) {
+export function PermitPanel({ open, choices, event, loading, error, citedNumber, partnersOf, datesOf, onPick, onBack, onClose }: Props) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   // A closed panel stays in the DOM for its slide; inert keeps it out of the tab order.
@@ -29,14 +33,14 @@ export function PermitPanel({ open, choices, event, loading, error, citedNumber,
       <div className="panel-bar">
         {onBack && event
           ? <button type="button" className="text-btn" onClick={onBack}>All {choices.length} here</button>
-          : <span className="panel-kicker">{event ? (category(event) === "listing" ? "Event" : "Permit") : `${choices.length} records on this spot`}</span>}
+          : <span className="panel-kicker">{event ? (isListing(category(event)) ? "Event" : "Permit") : `${choices.length} records on this spot`}</span>}
         <button ref={closeRef} type="button" className="icon-btn" aria-label="Close details (Esc)" onClick={onClose}>
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
         </button>
       </div>
 
-      {event ? (category(event) === "listing"
-          ? <ListingDetail e={event} loading={loading} error={error} cited={citedNumber(event.event_id)} />
+      {event ? (isListing(category(event))
+          ? <ListingDetail e={event} loading={loading} error={error} cited={citedNumber(event.event_id)} partners={partnersOf(event)} dates={datesOf(event)} />
           : <Detail e={event} loading={loading} error={error} cited={citedNumber(event.event_id)} />)
         : (
           <ul className="choices">
@@ -98,23 +102,44 @@ function Detail({ e, loading, error, cited }: { e: PennEvent; loading: boolean; 
   );
 }
 
-/** An event listed by a guide (visitphilly): no permit, no closure; what, when, where, and the event's own page. */
-function ListingDetail({ e, loading, error, cited }: { e: PennEvent; loading: boolean; error: string; cited: number }) {
+const MAX_DATES = 12;
+
+/** An event listed by a guide or ticket seller (visitphilly, Ticketmaster): no permit, no closure; what, when, where, and the event's own page. */
+function ListingDetail({ e, loading, error, cited, partners, dates }:
+    { e: PennEvent; loading: boolean; error: string; cited: number; partners: PennEvent[]; dates: PennEvent[] }) {
   const w = when(e);
   const { where, note } = listingWhere(e);
   const lister = LISTED_BY[e.source] ?? e.source;
   return (
     <div className="detail">
-      <div className="cat-tag cat-listing"><Swatch cat="listing" /> {LABEL.listing}</div>
+      <div className={`cat-tag cat-${category(e)}`}><Swatch cat={category(e)} /> {LABEL[category(e)]}</div>
       <h2>{tidy(e.title)}</h2>
       {cited > 0 && <p className="cited-flag"><span className="cite static">{cited}</span> Cited in the answer</p>}
 
       <dl>
         <div><dt>When</dt><dd>{w.range}{w.note && <span className="sub">{w.note}</span>}{note && <span className="sub">{note}</span>}
           <span className={`today${activeToday(e) ? " on" : ""}`}>{todayStatus(e)}.</span></dd></div>
+        {dates.length > 1 && (
+          <div><dt>Dates</dt><dd>
+            <ul className="run-dates">
+              {dates.slice(0, MAX_DATES).map(d => (
+                <li key={d.event_id} className={d.event_id === e.event_id ? "this" : ""}>
+                  {d.source_url && d.source !== "visitphilly"
+                    ? <a href={d.source_url} target="_blank" rel="noreferrer">{shortWhen(d)}</a> : shortWhen(d)}
+                </li>
+              ))}
+            </ul>
+            {dates.length > MAX_DATES && <span className="sub">and {dates.length - MAX_DATES} more in this window</span>}
+          </dd></div>
+        )}
         <div><dt>Where</dt><dd>{where || "Location not described"}</dd></div>
         <div><dt>Streets</dt><dd>No street closure listed<span className="sub">Closures for this event, if any, show as their own lines.</span></dd></div>
-        <div><dt>Listed by</dt><dd>{e.organization || lister}</dd></div>
+        <div><dt>Listed by</dt><dd>{e.organization || lister}
+          {partners.length > 0 && <span className="sub">
+            Also {partners[0].source === "visitphilly" ? "an editor’s pick on " : "sold on "}
+            <a href={partners[0].source_url} target="_blank" rel="noreferrer">{LISTED_BY[partners[0].source] ?? partners[0].source}</a>
+            {partners.length > 1 && ` (${partners.length} dates)`}
+          </span>}</dd></div>
         <div><dt>Record</dt><dd><span className="record-id">{e.event_id.split(":").slice(1).join(":")}</span></dd></div>
       </dl>
 

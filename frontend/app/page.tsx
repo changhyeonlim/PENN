@@ -20,6 +20,7 @@ const DATA_LAYERS = ["listings", "full", "lane", "sidewalk", "parking", "points"
 // Lines by how much of the street they take, heaviest first; a no-parking curb line last.
 const LINE_RANK = (e: PennEvent) => (category(e) === "parking" ? 3 : { full: 0, lane: 1, sidewalk: 2 }[extent(e)]);
 const FLAG_ICON = "penn-flag";
+const TICKET_ICON = "penn-flag-ticketed";
 // The icon is drawn at 2x for sharp edges; 22 x 27 px on the map. Its pole's foot sits 3 px in from the left.
 const FLAG_PX = { w: 44, h: 54, ratio: 2, footX: 3 };
 const isPointGeom = (e: PennEvent) => /^(MULTI)?POINT/.test(e.geometry_wkt);
@@ -74,6 +75,26 @@ const REASON_COLOR = ["match", ["get", "cat"], "event", COLOR.event, "blockparty
 function range(days: number): { start: string; end: string } {
   const now = appNow();
   return { start: now.toISOString(), end: new Date(now.getTime() + days * 864e5).toISOString() };
+}
+
+/** One show at one venue on several dates: listings of the same kind with the same title at the same spot
+ *  (4 decimal places, about 10 m). Fills `series` (each date's id -> the run, soonest first) and `leads` (the
+ *  date drawn for the run: the next one not yet over, else the first). */
+function groupSeries(events: PennEvent[], series: Map<string, PennEvent[]>, leads: Set<string>) {
+  series.clear(); leads.clear();
+  const runs = new Map<string, PennEvent[]>();
+  for (const e of events) {
+    if (!isListing(category(e)) || e.centroid_lat == null || e.centroid_lon == null) continue;
+    const k = `${category(e)}|${tidy(e.title).toLowerCase()}|${e.centroid_lat.toFixed(4)}|${e.centroid_lon.toFixed(4)}`;
+    runs.set(k, [...(runs.get(k) ?? []), e]);
+  }
+  const at = (e: PennEvent) => Date.parse(e.start_ts ?? `${e.start_date ?? "9999-12-31"}T00:00`);
+  for (const run of runs.values()) {
+    if (run.length < 2) continue;
+    run.sort((a, b) => at(a) - at(b));
+    run.forEach(e => series.set(e.event_id, run));
+    leads.add((run.find(e => daysAway(e) >= 0) ?? run[0]).event_id);
+  }
 }
 
 function toFeatures(events: PennEvent[]): GeoJSON.Feature[] {
@@ -168,8 +189,30 @@ export default function Page() {
   // edges; a window's request is shared while it is in flight.
   const cityCache = useRef(new Map<number, { at: number; req: Promise<CityLayer> }>());
   const cityEvents = useRef<PennEvent[]>([]);
-  /** What the map draws: the kinds switched off in the key left out, and records already over. */
-  const drawn = useCallback(() => cityEvents.current.filter(e => !hiddenRef.current.has(category(e)) && !isOver(e)), []);
+  // Matched pairs, both ways: a Ticketmaster event's visitphilly pick, and a pick's Ticketmaster dates.
+  const pickOf = useRef(new Map<string, string>());
+  const salesOf = useRef(new Map<string, string[]>());
+  // One show at one venue on several dates is one flag: every date's record maps to the whole run, and only
+  // its lead (the next date still to come) is drawn and counted.
+  const seriesOf = useRef(new Map<string, PennEvent[]>());
+  const leads = useRef(new Set<string>());
+  // Block party permits under an announced event closure: permit id -> the closure drawn for it.
+  const coveredBy = useRef(new Map<string, string>());
+  const folded = useCallback((e: PennEvent) => {
+    if (seriesOf.current.has(e.event_id) && !leads.current.has(e.event_id)) return true;
+    if (coveredBy.current.has(e.event_id) && !hiddenRef.current.has("event")) return true;
+    return category(e) === "listing" && salesOf.current.has(e.event_id) && !hiddenRef.current.has("ticketed");
+  }, []);
+
+  /** What the map draws: switched-off categories left out, and a visitphilly pick that Ticketmaster also lists
+   *  folded into the Ticketmaster flag (unless ticketed events are switched off, when the pick shows alone). */
+  const drawn = useCallback(() => cityEvents.current.filter(e => !hiddenRef.current.has(category(e)) && !folded(e) && !isOver(e)), [folded]);
+
+  /** The other listings of the same event, for the panel and the hover card. */
+  const partnersOf = useCallback((e: PennEvent): PennEvent[] => {
+    const ids = e.source === "ticketmaster" ? [pickOf.current.get(e.event_id)] : salesOf.current.get(e.event_id) ?? [];
+    return ids.flatMap(id => (id && known.current.get(id)) || []);
+  }, []);
 
   /** Put the city's records on the map, minus the categories switched off in the key. */
   const drawCity = useCallback(() => {
@@ -194,10 +237,11 @@ export default function Page() {
     const b = m.getBounds();
     const out = m.getZoom() < MINOR_ZOOM;
     setZoomedOut(out);
-    // Switched-off rows keep their counts. Zoomed out, the key counts only what is drawn: no minor lines.
-    setEvents(cityEvents.current.filter(e => e.centroid_lon != null && e.centroid_lat != null && !isOver(e)
+    // A pick folded into its Ticketmaster flag, or a show's later dates, are not counted again; switched-off
+    // rows keep their counts. Zoomed out, the key counts only what is drawn: no minor lines.
+    setEvents(cityEvents.current.filter(e => e.centroid_lon != null && e.centroid_lat != null && !folded(e) && !isOver(e)
       && !(out && isMinor(e)) && b.contains([e.centroid_lon, e.centroid_lat])));
-  }, []);
+  }, [folded]);
 
   const load = useCallback(() => {
     const m = map.current;
@@ -210,6 +254,11 @@ export default function Page() {
         if (seq !== loadSeq.current) return;
         events.forEach(e => known.current.set(e.event_id, e));
         cityEvents.current = events;
+        pickOf.current = new Map((same_as ?? []).map(([pick, sale]) => [sale, pick]));
+        salesOf.current = new Map();
+        (same_as ?? []).forEach(([pick, sale]) => salesOf.current.set(pick, [...(salesOf.current.get(pick) ?? []), sale]));
+        coveredBy.current = new Map(covered ?? []);
+        groupSeries(events, seriesOf.current, leads.current);
         setMapError(truncated ? "The map is showing only part of the city's records for this window." : "");
         drawCity();
         countInView();
@@ -273,6 +322,9 @@ export default function Page() {
       const flag = new Image(FLAG_PX.w, FLAG_PX.h);
       flag.onload = () => { if (!m.hasImage(FLAG_ICON)) m.addImage(FLAG_ICON, flag, { pixelRatio: FLAG_PX.ratio }); };
       flag.src = flagDataUrl(FLAG_PX.w, FLAG_PX.h);
+      const ticket = new Image(FLAG_PX.w, FLAG_PX.h);
+      ticket.onload = () => { if (!m.hasImage(TICKET_ICON)) m.addImage(TICKET_ICON, ticket, { pixelRatio: FLAG_PX.ratio }); };
+      ticket.src = flagDataUrl(FLAG_PX.w, FLAG_PX.h, "ticketed");
       // Under the basemap's labels, so street names stay readable on top of the permits.
       const below = m.getStyle().layers.find(l => l.type === "symbol")?.id;
       const add = (l: maplibregl.LayerSpecification) => m.addLayer(l, below);
@@ -342,8 +394,8 @@ export default function Page() {
         paint: { "circle-color": HIGHLIGHT, "circle-radius": zoomWidth(9, 14), "circle-opacity": 0.85, "circle-blur": 0.2 } });
       m.addLayer({ id: "selected-point", type: "circle", source: "selected", filter: isPoint,
         paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": zoomWidth(8, 12), "circle-stroke-color": "#1B2433", "circle-stroke-width": 2.5 } });
-      m.addLayer({ id: "listings", type: "symbol", source: "events", filter: ["==", ["get", "cat"], "listing"],
-        layout: { "icon-image": FLAG_ICON, "icon-anchor": "bottom-left", "icon-offset": [-FLAG_PX.footX, 0],
+      m.addLayer({ id: "listings", type: "symbol", source: "events", filter: ["in", ["get", "cat"], ["literal", ["listing", "ticketed"]]],
+        layout: { "icon-image": ["match", ["get", "cat"], "ticketed", TICKET_ICON, FLAG_ICON], "icon-anchor": "bottom-left", "icon-offset": [-FLAG_PX.footX, 0],
           "icon-allow-overlap": true, "icon-ignore-placement": true, "symbol-sort-key": ["-", 0, ["get", "days"]] },   // today's on top
         paint: { "icon-opacity": flagOpacity } });
       showHoodsOn(m, showHoodsRef.current);
@@ -554,12 +606,12 @@ export default function Page() {
 
       {hover && (
         <div className="hover-tip" style={{ left: hover.x + 14, top: hover.y + 14 }} aria-hidden="true">
-          <TipBody e={hover.e} />
+          <TipBody e={hover.e} partners={partnersOf(hover.e)} dates={seriesOf.current.get(hover.e.event_id)?.length ?? 1} />
         </div>
       )}
 
       <PermitPanel open={panelOpen} choices={choices} event={selected} loading={detailLoading} error={detailError}
-        citedNumber={citedNumber} onPick={e => select(e)} onBack={choices.length > 1 ? () => setSelected(null) : null}
+        citedNumber={citedNumber} partnersOf={partnersOf} datesOf={e => seriesOf.current.get(e.event_id) ?? [e]} onPick={e => select(e)} onBack={choices.length > 1 ? () => setSelected(null) : null}
         onClose={closePanel} />
 
       <div className="dock">
@@ -643,9 +695,9 @@ const MAX_TIP_PLACES = 2;
 // event closure close the street; no parking is a curb rule.
 const HOW_MUCH: Record<Extent, string> = { full: "full street closed", lane: "one lane closed", sidewalk: "sidewalk only" };
 
-function TipBody({ e }: { e: PennEvent }) {
+function TipBody({ e, partners, dates }: { e: PennEvent; partners: PennEvent[]; dates: number }) {
   const cat = category(e);
-  if (cat === "listing") return <ListingTip e={e} />;
+  if (isListing(cat)) return <ListingTip e={e} partners={partners} dates={dates} />;
   const places = streetCase(tidy(e.description || "")).split(/;\s*/).filter(Boolean);
   const title = tidy(e.title).replace(/\s*extend(?:ed)? from permit\s*#?\s*[\d-]+/gi, "");
   const more = places.length - MAX_TIP_PLACES;
@@ -669,15 +721,15 @@ function TipBody({ e }: { e: PennEvent }) {
 }
 
 /** A listed event: what, when and where as labelled rows, and who listed it. */
-function ListingTip({ e }: { e: PennEvent }) {
+function ListingTip({ e, partners, dates }: { e: PennEvent; partners: PennEvent[]; dates: number }) {
   const { where, note } = listingWhere(e);
   const title = tidy(e.title);
   return (
     <>
-      <span className="tip-cat cat-listing">{LABEL.listing}<span className="tip-src"> · {LISTED_BY[e.source] ?? e.source}</span></span>
+      <span className={`tip-cat cat-${category(e)}`}>{LABEL[category(e)]}<span className="tip-src"> · {[e, ...partners.slice(0, 1)].map(x => LISTED_BY[x.source] ?? x.source).join(" and ")}</span></span>
       <span className="tip-title">{title.length > 70 ? `${title.slice(0, 68).trimEnd()}…` : title}</span>
       <dl className="tip-rows">
-        <dt>When</dt><dd>{shortWhen(e)}{note && <span className="tip-note">{note}</span>}</dd>
+        <dt>When</dt><dd>{shortWhen(e)}{dates > 1 && <span className="tip-note">and {dates - 1} more date{dates > 2 ? "s" : ""}</span>}{note && <span className="tip-note">{note}</span>}</dd>
         {where && <><dt>Where</dt><dd>{where}</dd></>}
       </dl>
       <span className="tip-foot">

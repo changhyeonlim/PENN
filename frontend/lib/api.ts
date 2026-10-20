@@ -54,19 +54,20 @@ export function wktToGeometry(wkt: string): GeoJSON.Geometry | null {
 
 /** Why a street is affected, which is what people ask: construction, an event, or a block party. No parking and
  *  the listings are their own kinds, since none of them closes a street. Color on the map. */
-export type Category = "construction" | "event" | "blockparty" | "parking" | "listing";
+export type Category = "construction" | "event" | "blockparty" | "parking" | "listing" | "ticketed";
 /** How much of the street a closure takes, as its permit lists it. Line weight on the map. */
 export type Extent = "full" | "lane" | "sidewalk";
-/** Listings mark something happening at a place, never a closure: visitphilly picks. */
-export const isListing = (c: Category) => c === "listing";
+/** Listings mark something happening at a place, never a closure: visitphilly picks and Ticketmaster events. */
+export const isListing = (c: Category) => c === "listing" || c === "ticketed";
 
 /** Sources of events that happen at a place without closing a street: drawn as flags, never as closures. */
-export const LISTING_SOURCES = ["visitphilly"];
-export const LISTED_BY: Record<string, string> = { visitphilly: "visitphilly.com" };
+export const LISTING_SOURCES = ["visitphilly", "ticketmaster"];
+export const LISTED_BY: Record<string, string> = { visitphilly: "visitphilly.com", ticketmaster: "Ticketmaster" };
 
 /** The record's reason. Road, utility and building work are all construction; so is the odd other permit (a
  *  banner, an unmapped work type), since every one of them is work in the street. */
 export function category(e: PennEvent): Category {
+  if (e.source === "ticketmaster") return "ticketed";
   if (LISTING_SOURCES.includes(e.source)) return "listing";
   if (e.event_type === "event" || e.event_type === "film_shoot") return "event";
   if (e.event_type === "parking_restriction") return "parking";
@@ -91,6 +92,7 @@ export const CATEGORIES: { key: Category; color: string; label: string; detail: 
   { key: "blockparty", color: "#0E9F6E", label: "Block party", detail: "Block party permit" },
   { key: "parking", color: "#6B7280", label: "No parking", detail: "Parking or loading restriction" },
   { key: "listing", color: "#1D4ED8", label: "Event listing", detail: "visitphilly.com pick; no street closure listed" },
+  { key: "ticketed", color: "#A3166F", label: "Ticketed event", detail: "Ticketmaster listing; no street closure listed" },
 ];
 /** Plain-language meaning of each category, for the key's explanation. */
 export const MEANING: Record<Category, string> = {
@@ -99,6 +101,7 @@ export const MEANING: Record<Category, string> = {
   blockparty: "A block party permit closes the block to traffic for the party.",
   parking: "Parking or loading is restricted at the curb.",
   listing: "An editor's pick on visitphilly.com: something happening at this place. A listing is not a street closure.",
+  ticketed: "A ticketed event at this venue, listed by Ticketmaster. A listing is not a street closure.",
 };
 /** The line weights, heaviest first, with what each means for getting through. */
 export const EXTENTS: { key: Extent; label: string; detail: string }[] = [
@@ -140,19 +143,21 @@ export const LABEL = Object.fromEntries(CATEGORIES.map(c => [c.key, c.label])) a
 export const DETAIL = Object.fromEntries(CATEGORIES.map(c => [c.key, c.detail])) as Record<Category, string>;
 export const HIGHLIGHT = "#FFD43B";
 
-/** The listing marker: a blue pennant with a "P" on a pole, white-edged so it reads over red closure lines.
- * One drawing for the map icon and the key. The pole's foot (x 2.5, y 21 of 18 x 22) is the event's spot. */
-export function flagSvg(width: number, height: number): string {
-  const blue = COLOR.listing, pole = "#12306E";
+/** The listing marker: a pennant on a pole, white-edged so it reads over red closure lines. Blue with a "P" for a
+ * visitphilly pick, magenta with a "T" for a ticketed event. One drawing for the map icon and the key. The pole's
+ * foot (x 2.5, y 21 of 18 x 22) is the event's spot. */
+export function flagSvg(width: number, height: number, cat: Category = "listing"): string {
+  const blue = COLOR[cat], pole = cat === "ticketed" ? "#5C0C3F" : "#12306E", letter = cat === "ticketed" ? "T" : "P";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 18 22">`
     + `<line x1="2.5" y1="2" x2="2.5" y2="21" stroke="#fff" stroke-width="3.6" stroke-linecap="round"/>`
     + `<line x1="2.5" y1="2" x2="2.5" y2="21" stroke="${pole}" stroke-width="1.7" stroke-linecap="round"/>`
     + `<path d="M3.3 1.6H16.6L13.5 6.4L16.6 11.2H3.3Z" fill="${blue}" stroke="#fff" stroke-width="1.3" stroke-linejoin="round"/>`
-    + `<text x="9.4" y="9.5" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="7.6" font-weight="700" fill="#fff">P</text>`
+    + `<text x="9.4" y="9.5" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="7.6" font-weight="700" fill="#fff">${letter}</text>`
     + `<circle cx="2.5" cy="21" r="1.5" fill="${pole}" stroke="#fff" stroke-width="1"/>`
     + `</svg>`;
 }
-export const flagDataUrl = (width: number, height: number) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(flagSvg(width, height))}`;
+export const flagDataUrl = (width: number, height: number, cat: Category = "listing") =>
+  `data:image/svg+xml;charset=utf-8,${encodeURIComponent(flagSvg(width, height, cat))}`;
 
 const DAY: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
 const TIME: Intl.DateTimeFormatOptions = { ...DAY, hour: "numeric", minute: "2-digit" };

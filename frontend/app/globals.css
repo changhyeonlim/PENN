@@ -8,7 +8,7 @@
   --sign: #1E5B44;          /* street-name sign green: the place an answer is about */
   --hl: #FFD43B;            /* highlighter: what the answer cites */
   /* why a street is affected (CATEGORIES in lib/api.ts) */
-  --construction: #E35205; --event: #5A3FC0; --blockparty: #0E9F6E; --parking: #6B7280; --listing: #1D4ED8;
+  --construction: #E35205; --event: #5A3FC0; --blockparty: #0E9F6E; --parking: #6B7280; --listing: #1D4ED8; --ticketed: #A3166F;
   --ui: "Public Sans", "Segoe UI", system-ui, sans-serif;
   --display: "Barlow Condensed", "Arial Narrow", sans-serif-condensed, sans-serif;
   --bar-h: 64px;
@@ -86,7 +86,7 @@ button { cursor: pointer; }
 /* category text colors (also used for the panel tag) */
 /* As text the orange and green are taken darker, to stay readable on white. */
 .cat-construction { color: #B23F00; } .cat-event { color: var(--event); } .cat-blockparty { color: #0A7A55; }
-.cat-parking { color: var(--parking); } .cat-listing { color: var(--listing); }
+.cat-parking { color: var(--parking); } .cat-listing { color: var(--listing); } .cat-ticketed { color: var(--ticketed); }
 .swatch { flex: none; display: block; }
 .swatch-flag { display: flex; justify-content: center; align-items: flex-end; height: 16px; }
 
@@ -265,6 +265,10 @@ button { cursor: pointer; }
 .detail dl > div { display: grid; grid-template-columns: 74px 1fr; gap: 10px; }
 .detail dt { color: var(--muted); font-size: 14px; }
 .detail dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+/* A show's dates at one venue: the date this flag stands for in bold, each linking to its own ticket page. */
+.run-dates { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font-variant-numeric: tabular-nums; }
+.run-dates a { color: var(--ink); text-underline-offset: 2px; }
+.run-dates li.this { font-weight: 700; }
 .where-line { display: block; }
 .sub { display: block; font-size: 13px; color: var(--muted); margin-top: 1px; }
 .today { display: block; margin-top: 4px; font-size: 13px; color: var(--muted); }
