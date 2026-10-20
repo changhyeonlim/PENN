@@ -257,10 +257,22 @@ button { cursor: pointer; }
   pointer-events: auto; height: calc(var(--bar-h) - var(--fine-rows) * var(--fine-h)); background: var(--ink); color: #fff;
   display: flex; align-items: center; gap: 10px; padding: 0 12px;
 }
+.ask-field { position: relative; flex: 1; min-width: 0; display: flex; }
 .askbar input {
   flex: 1; min-width: 0; height: 42px; border: 0; border-radius: 8px; padding: 0 14px;
   background: #fff; color: var(--ink); font-size: 16px;
 }
+/* The rolling hint over the empty box: the lead-in stays put, the example rolls up to the next one. */
+.ask-hint {
+  position: absolute; inset: 0 14px; display: flex; align-items: center; gap: 0 .3em; pointer-events: none;
+  color: #727B88; font-size: 16px; white-space: nowrap; overflow: hidden;
+}
+.roll { position: relative; display: inline-block; color: #4A5464; clip-path: inset(0 -100vw 0 0); }
+.roll > span { display: inline-block; }
+.roll-in { animation: roll-in .45s cubic-bezier(.2, .7, .3, 1) both; }
+.roll-out { position: absolute; left: 0; top: 0; animation: roll-out .45s cubic-bezier(.2, .7, .3, 1) both; }
+@keyframes roll-in { from { transform: translateY(100%); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes roll-out { from { transform: none; opacity: 1; } to { transform: translateY(-100%); opacity: 0; } }
 .askbar input::placeholder { color: #727B88; }
 .askbar input:focus-visible { outline: 3px solid var(--hl); outline-offset: 1px; }
 .ask-btn {
@@ -271,6 +283,12 @@ button { cursor: pointer; }
 .ask-btn:disabled { background: #3A4556; color: #A9B1BD; cursor: default; }
 .askbar :focus-visible { outline-color: var(--hl); }
 .pick-btn { width: 42px; height: 42px; flex: none; border: 1.5px solid #3A4556; border-radius: 8px; background: none; color: #D5DAE1; display: grid; place-items: center; }
+/* With room to spare, the pin says what it does; on narrower screens it is the icon alone. */
+.pick-label { display: none; }
+@media (min-width: 900px) {
+  .pick-btn { width: auto; padding: 0 14px 0 11px; display: flex; align-items: center; gap: 7px; font-size: 14px; white-space: nowrap; }
+  .pick-label { display: inline; }
+}
 .pick-btn:hover, .pick-btn.on { border-color: var(--hl); color: var(--hl); }
 .pin-chip { display: inline-flex; align-items: center; gap: 6px; flex: none; font-size: 14px; color: var(--hl); padding: 0 4px 0 10px; height: 32px; border: 1.5px solid var(--hl); border-radius: 16px; }
 .pin-chip button { border: 0; background: none; color: inherit; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 12px; }
@@ -354,4 +372,5 @@ button { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0s !important; animation: none !important; }
   .sweep::after { left: 17px; }
+  .roll-out { display: none; }   /* without the roll, the example just changes */
 }

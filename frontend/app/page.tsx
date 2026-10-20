@@ -42,6 +42,15 @@ const HOOD_LAYERS = ["hood-line", "hood-focus", "hood-label"];
 // Everything past the city line, built from the neighborhoods by scripts/build_city_mask.py.
 const CITY_MASK_URL = "/city-mask.geojson";
 const SIGN = "#1E5B44";   // --sign in globals.css
+// The ask box's rolling hint: one of each kind of question PENN answers, alternating so no two neighbors are
+// alike. A corner and a time; an event by name (past years from City notices, the next date, and the web when
+// PENN has no record); a block party, a ticketed event or construction near a place; whether something closes
+// every year; and a trip. The place questions resolve with /locate; the event ones by name (find_event).
+const EXAMPLES = ["Spruce and 15th next week", "When is the Philadelphia Marathon, and what closes?",
+  "Any block parties in Fishtown this weekend?", "Any concerts in Old City tonight?",
+  "Is there construction in Francisville?", "Does the Mummers Parade close Broad Street every year?",
+  "Can I drive to Rittenhouse on Sunday?", "Is the Rocky Run happening this year?"];
+const EXAMPLE_MS = 3600;   // a little longer than before: some examples are whole questions now
 const PRESETS = [{ days: 1, label: "24 hours" }, { days: 7, label: "7 days" }, { days: 30, label: "30 days" }];
 // How long a window's city-wide records are reused before the map asks again: "the next 7 days"
 // moves with the clock, and the daily load changes the data once a day.
@@ -174,6 +183,7 @@ export default function Page() {
   const [win, setWin] = useState(7);
   const [events, setEvents] = useState<PennEvent[]>([]);
   const [zoomedOut, setZoomedOut] = useState(false);   // below MINOR_ZOOM: the minor kinds are not drawn
+  const [turn, setTurn] = useState(0);   // how many times the ask box's example has rolled
   const [mapLoading, setMapLoading] = useState(true);
   const [mapError, setMapError] = useState("");
   const [loaded, setLoaded] = useState<Record<string, string>>({});   // source -> last successful load (p4-04)
@@ -226,6 +236,13 @@ export default function Page() {
     mq.addEventListener("change", on);
     return () => mq.removeEventListener("change", on);
   }, []);
+  // The empty ask box rolls through example questions; typing, a pin, or a phone's narrow box stops it.
+  const rolling = !question && !pin && !narrow;
+  useEffect(() => {
+    if (!rolling) return;
+    const t = setInterval(() => setTurn(n => n + 1), EXAMPLE_MS);
+    return () => clearInterval(t);
+  }, [rolling]);
 
   // Handlers registered once on the map read the latest state through refs.
   const winRef = useRef(win); winRef.current = win;
@@ -862,11 +879,25 @@ export default function Page() {
             <button type="button" className={`pick-btn${picking ? " on" : ""}`} aria-pressed={picking}
               title="Pick a point on the map" aria-label="Pick a point on the map" onClick={() => setPicking(p => !p)}>
               <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M9 16s5-4.6 5-8.6A5 5 0 0 0 4 7.4C4 11.4 9 16 9 16z" fill="none" stroke="currentColor" strokeWidth="1.6" /><circle cx="9" cy="7.4" r="1.8" fill="currentColor" /></svg>
+              <span className="pick-label" aria-hidden="true">{picking ? "Click the map" : "Pick on map"}</span>
             </button>
           )}
-          <input id="q" ref={inputRef} value={question} onChange={e => { sentAt.current = -1; setQuestion(e.target.value); }}
-            onKeyDown={recall} autoComplete="off"
-            placeholder={pin ? "Ask about the pinned point" : narrow ? "Ask about a street or corner" : "Ask about a street or corner, like Spruce and 15th next week"} />
+          <div className="ask-field">
+            <input id="q" ref={inputRef} value={question} onChange={e => { sentAt.current = -1; setQuestion(e.target.value); }}
+              onKeyDown={recall} autoComplete="off"
+              placeholder={pin ? "Ask about the pinned point" : narrow ? "Ask about streets, events or closures" : ""} />
+            {/* The empty box's hint, with its example rolling up to the next every few seconds: a placeholder
+                attribute can't animate, so this sits over the input and lets clicks through. */}
+            {rolling && (
+              <span className="ask-hint" aria-hidden="true">
+                Ask about streets, events or closures, like{" "}
+                <span className="roll">
+                  <span key={turn} className={turn ? "roll-in" : undefined}>{EXAMPLES[turn % EXAMPLES.length]}</span>
+                  {turn > 0 && <span key={`out-${turn}`} className="roll-out">{EXAMPLES[(turn - 1) % EXAMPLES.length]}</span>}
+                </span>
+              </span>
+            )}
+          </div>
           <button type="submit" className="ask-btn" disabled={!question.trim() || busy}>{busy ? "Asking" : "Ask"}</button>
         </form>
         {/* Two rows: what the data is and where it comes from, then privacy and the map credits. */}
