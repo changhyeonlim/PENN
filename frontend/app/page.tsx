@@ -92,6 +92,23 @@ function range(days: number): { start: string; end: string } {
   return { start: now.toISOString(), end: new Date(now.getTime() + days * 864e5).toISOString() };
 }
 
+// The header's "last loaded" stamps: which ingest_runs sources feed each kind of record on the map.
+const FRESH_GROUPS: { label: string; sources: string[] }[] = [
+  { label: "permits", sources: ["lane_closures"] },
+  { label: "event closures", sources: ["press_releases", "event_closures", "geocode_closures"] },
+  { label: "listings", sources: ["visitphilly", "ticketmaster"] },
+];
+
+/** "today 9:07 AM", "yesterday 7:30 AM" or "Oct 14", in Philadelphia time, against the app's clock. */
+function loadedStamp(iso: string, now: Date): string {
+  const day = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const t = new Date(iso);
+  const time = t.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+  if (day(t) === day(now)) return `today ${time}`;
+  if (day(t) === day(new Date(now.getTime() - 864e5))) return `yesterday ${time}`;
+  return t.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+}
+
 /** One show at one venue on several dates: listings of the same kind with the same title at the same spot
  *  (4 decimal places, about 10 m). Fills `series` (each date's id -> the run, soonest first) and `leads` (the
  *  date drawn for the run: the next one not yet over, else the first). */
@@ -148,6 +165,7 @@ export default function Page() {
   const [zoomedOut, setZoomedOut] = useState(false);   // below MINOR_ZOOM: the minor kinds are not drawn
   const [mapLoading, setMapLoading] = useState(true);
   const [mapError, setMapError] = useState("");
+  const [loaded, setLoaded] = useState<Record<string, string>>({});   // source -> last successful load (p4-04)
 
   const [question, setQuestion] = useState("");
   const [asked, setAsked] = useState("");
@@ -553,6 +571,11 @@ export default function Page() {
 
   useEffect(() => { load(); }, [win, load]);
 
+  useEffect(() => {
+    getJSON<{ source: string; last_ok: string }[]>("/freshness")
+      .then(rows => setLoaded(Object.fromEntries(rows.map(r => [r.source, r.last_ok]))))
+      .catch(() => {});   // the stamps are a nicety; the map's own error covers a missing API
+  }, []);
 
   useEffect(() => { drawCity(); countInView(); }, [hiddenCats, drawCity, countInView]);
 
@@ -748,6 +771,7 @@ export default function Page() {
               onClick={() => setWin(p.days)}>{p.label}</button>
           ))}
         </div>
+        <FreshLine loaded={loaded} />
       </header>
 
       {mapError && <div className="map-error" role="alert">{mapError}</div>}
@@ -914,5 +938,22 @@ function ListingTip({ e, partners, dates }: { e: PennEvent; partners: PennEvent[
         <span className="tip-hint">Click for details</span>
       </span>
     </>
+  );
+}
+
+/** "Updated yesterday 10:08 AM": the stalest of the three kinds' latest loads, so it never overstates how fresh
+ *  the map is. Each kind's own stamp ("permits today 7:30 AM · ...") is in the hover title. */
+function FreshLine({ loaded }: { loaded: Record<string, string> }) {
+  const now = appNow();
+  const lasts = FRESH_GROUPS.flatMap(g => {
+    const last = g.sources.map(s => loaded[s]).filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b)).pop();
+    return last ? [{ label: g.label, last }] : [];
+  });
+  if (!lasts.length) return null;
+  const stalest = lasts.reduce((a, b) => (Date.parse(a.last) <= Date.parse(b.last) ? a : b));
+  return (
+    <p className="fresh" title={`Last loaded: ${lasts.map(l => `${l.label} ${loadedStamp(l.last, now)}`).join(" · ")}`}>
+      Updated {loadedStamp(stalest.last, now)}
+    </p>
   );
 }
