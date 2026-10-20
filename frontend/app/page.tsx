@@ -26,6 +26,14 @@ const isPointGeom = (e: PennEvent) => /^(MULTI)?POINT/.test(e.geometry_wkt);
 // What a click or hover picks first where things overlap: a flag, then a dot, then lines by severity.
 // A marker is an explicit target; the street line under it can still be clicked beside it.
 const pickOrder = (e: PennEvent) => (isListing(category(e)) ? 0 : isPointGeom(e) ? 1 : 2 + LINE_RANK(e));
+/** Records on one spot by date: in effect today first, then upcoming soonest first, then ones already
+ *  over, most recent first. The furthest-away events end up last. */
+const startMs = (e: PennEvent) => Date.parse(e.start_ts ?? `${e.start_date ?? "9999-12-31"}T00:00`);
+function byWhen(a: PennEvent, b: PennEvent): number {
+  const now = appNow().getTime();
+  const band = (e: PennEvent) => (activeToday(e) ? 0 : startMs(e) > now ? 1 : 2);
+  return band(a) - band(b) || (band(a) === 2 ? startMs(b) - startMs(a) : startMs(a) - startMs(b));
+}
 // Neighborhood outlines: a slimmed copy of data/areas/philadelphia-neighborhoods.geojson (OpenDataPhilly),
 // the same boundaries the server uses when a question names a neighborhood.
 const HOODS_URL = "/neighborhoods.geojson";
@@ -313,7 +321,7 @@ export default function Page() {
         seen.add(id);
         const e = known.current.get(id);
         return e ? [e] : [];
-      }).sort((a, b) => pickOrder(a) - pickOrder(b));
+      }).sort((a, b) => pickOrder(a) - pickOrder(b) || byWhen(a, b));
       // On a flag or dot, only the markers under the cursor count: the street line beneath is not what was aimed at.
       return found.length && pickOrder(found[0]) < 2 ? found.filter(e => pickOrder(e) < 2) : found;
     };
