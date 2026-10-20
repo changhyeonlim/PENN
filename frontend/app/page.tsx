@@ -155,6 +155,11 @@ function boundsOf(features: GeoJSON.Feature[]): maplibregl.LngLatBounds | null {
 
 const reduceMotion = () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const isNarrow = () => typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches;
+// From this width the answer is a column down the left (see .sheet in globals.css), not a sheet over the bottom.
+const hasRail = () => typeof window !== "undefined" && window.matchMedia("(min-width: 900px)").matches;
+const RAIL_W = 400;     // --rail-w
+const TOPBAR_H = 50;    // --topbar-h
+const KEY_W = 224;      // .legend width
 
 export default function Page() {
   const mapEl = useRef<HTMLDivElement>(null);
@@ -226,10 +231,18 @@ export default function Page() {
   const winRef = useRef(win); winRef.current = win;
   const pickingRef = useRef(picking); pickingRef.current = picking;
   const panelOpenRef = useRef(panelOpen); panelOpenRef.current = panelOpen;
+  const sheetUpRef = useRef(false); sheetUpRef.current = status !== "idle";
 
   /** Room the floating UI takes, so a fitted place lands in the visible part of the map. */
   const padding = useCallback((expectSheet = false): maplibregl.PaddingOptions => {
     const narrow = isNarrow();
+    if (hasRail()) {
+      // The answer is a column on the left and the key stands in the bottom right, so the place goes between.
+      const panel = panelOpenRef.current ? 380 : 0;
+      return { top: 12 + TOPBAR_H + 24, bottom: 24,
+        left: expectSheet || sheetUpRef.current ? 12 + RAIL_W + 32 : 48,
+        right: panel ? panel + 40 : 12 + KEY_W + 36 };
+    }
     // The map ends at the ask banner; the answer sheet and legend sit over its bottom edge. While an
     // answer loads, its sheet is still short, so plan for the height it will grow to (see .sheet max-height).
     const grown = expectSheet ? (narrow ? 0.48 * window.innerHeight : Math.min(0.46 * window.innerHeight, 460)) : 0;

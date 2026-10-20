@@ -112,6 +112,15 @@ button { cursor: pointer; }
   border-radius: 12px 12px 0 0; box-shadow: 0 -4px 18px rgba(27, 36, 51, .12);
   display: flex; flex-direction: column; max-height: min(46vh, 460px);
 }
+/* On desktop, height is the scarce room: the answer is a column down the left, under the top card, and the map
+   keeps its full height. Keep the width in step with RAIL_W in page.tsx. */
+@media (min-width: 900px) {
+  .sheet {
+    position: fixed; top: calc(12px + var(--topbar-h) + 10px); left: 12px; width: var(--rail-w);
+    max-height: calc(100vh - var(--topbar-h) - 34px - var(--bar-h));
+    border-radius: 12px; box-shadow: var(--lift);
+  }
+}
 .sheet-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px 8px; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
 .sheet.collapsed .sheet-head { border-bottom: 0; }
 .sheet-when { font-size: 14px; color: var(--muted); flex: 1 1 auto; min-width: 0; }
@@ -163,7 +172,7 @@ button { cursor: pointer; }
 .web-sources a { color: var(--ink); text-underline-offset: 2px; }
 
 .legend {
-  flex: none; width: 212px; margin-bottom: 12px; margin-left: auto;
+  flex: none; width: 224px; margin-bottom: 12px; margin-left: auto;
   background: var(--surface); border-radius: 10px; box-shadow: var(--lift); font-size: 14px;
 }
 .legend-head {
