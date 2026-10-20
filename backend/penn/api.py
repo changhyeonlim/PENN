@@ -1,7 +1,8 @@
 """FastAPI app. The map and timeline endpoints work with no model in the loop."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from functools import lru_cache
 
 import os
 
@@ -12,8 +13,9 @@ from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 
 from . import db, overlaps, tools
+from .agent import ambiguity, citations
 from .config import LOCAL_TZ
-from .geo import locate
+from .geo import landmarks, locate
 from . import timeutil
 from .timeutil import resolve_window
 
@@ -32,6 +34,16 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 def _default_window(days: int = 7) -> tuple[str, str]:
     now = timeutil.now_local()
     return now.isoformat(), (now + timedelta(days=days)).isoformat()
+
+
+@lru_cache(maxsize=1)
+def records_start() -> date:
+    """Jan 1 of the year of PENN's first record (2016 when this was written)."""
+    try:
+        rows = db.query("SELECT min(toYear(coalesce(start_date, toDate(start_ts)))) AS y FROM events FINAL")
+        return date(int(rows[0]["y"]), 1, 1)
+    except Exception:
+        return date(2016, 1, 1)
 
 
 @app.get("/health")
@@ -116,29 +128,94 @@ def locate_place(q: str):
             "window": win.label if win else "the next 7 days"}
 
 
+class Turn(BaseModel):
+    question: str
+    answer: str = ""
+
+
 class AskBody(BaseModel):
     question: str
     lat: float | None = None
     lon: float | None = None
+    history: list[Turn] = []        # earlier turns of this conversation, oldest first
+    context: dict | None = None     # the last reply's "context", sent back as is
+
+
+def _reuse_note(ctx, place, win) -> str | None:
+    """Say so whenever the answer leaned on the last question's place or time, so a wrong
+    carry-over is visible instead of silently answered."""
+    used = [x.label for x, id_ in ((place, "prev_place"), (win, "prev_window")) if x is not None and x.id == id_]
+    if not used:
+        return None
+    return f"Using {' and '.join(used)} from your last question."
+
+
+def _next_context(place, win, previous: dict | None) -> dict:
+    """What the frontend sends back next turn: the place and window this answer used, or the
+    previous ones when it searched nothing (a greeting must not forget where we were)."""
+    prev = previous or {}
+    out = {}
+    out["place"] = {**place.query, "label": place.label} if place else prev.get("place")
+    out["window"] = ({"start": win.window.start.isoformat(), "end": win.window.end.isoformat(), "label": win.label}
+                     if win else prev.get("window"))
+    return {k: v for k, v in out.items() if v}
 
 
 @app.post("/agent")
 def agent(body: AskBody):
+    from .agent.context import Context
     from .agent.loop import ask
 
-    loc = locate.from_click(body.lon, body.lat) if body.lat is not None and body.lon is not None \
-        else locate.from_text(body.question)
-    if loc.needs_pin:
-        return {"needs_pin": True, "message": "Pick a point on the map so PENN knows where you mean."}
-    win = resolve_window(body.question)
-    if win is None:
-        s, e = _default_window()
-        start, end, label = s, e, "the next 7 days"
-    else:
-        start, end, label = win.start.isoformat(), win.end.isoformat(), win.label
+    ctx = Context(timeutil.now_local(), records_start())
+    if body.lat is not None and body.lon is not None:
+        loc = ctx.add_pin(body.lon, body.lat)
+        if loc.method == "outside":
+            return {"outside": True, "place": loc.label,
+                    "message": f"PENN covers the City of Philadelphia only, and {loc.label} is outside it, "
+                               "so PENN has no records to answer from."}
+    ctx.add_message(body.question)
+    ctx.add_previous(body.context)
     try:
-        a = ask(body.question, loc.cells, start, end, loc.label, label)
+        a = ask(body.question, ctx, history=[(t.question, t.answer) for t in body.history])
     except NotImplementedError:
         raise HTTPException(501, "Ask PENN is not built yet (penn/agent/loop.py).")
-    return {"answer": a.text, "place": loc.label, "window": label, "model": a.route.model,
-            "route_reason": a.route.reason, "tools": a.tools_called, "cited": a.cited, "calls": a.calls}
+
+    place, win = ctx.last_place(), ctx.last_window()
+    notes = []
+    if note := _reuse_note(ctx, place, win):
+        notes.append(note)
+    if place:
+        notes += ambiguity.notes(body.question, place.label)
+    if win is not None and win.id == "default_window" and timeutil.mentions_time(body.question):
+        notes.insert(0, "PENN could not read the date in your question, so this answer covers the next 7 days. "
+                        "Try a form like \"November 22\", \"the 2nd week of November\" or \"March 2025\".")
+    answer = "\n".join(f"Note: {n}" for n in notes) + "\n\n" + a.text if notes else a.text
+    cited, past = citations.expand_groups(list(a.cited), a.groups), []   # a cited group highlights all its blocks
+    if place and win and win.kind == "future" and win.id != "default_window":
+        # Past years on the same dates, added in code so the model can neither drop nor pick the wrong ones.
+        token = tools.LEGS.set(place.loc.seg_ids or None)
+        try:
+            past = tools.history.same_dates(
+                tools.get_location_history(place.loc.cells, win.window.start.isoformat(), win.window.end.isoformat()),
+                win.window.dates()[0], win.window.dates()[-1])
+        finally:
+            tools.LEGS.reset(token)
+        if text := tools.history.same_dates_text(past, win.window.start.year):
+            answer += "\n\n" + text
+            cited += [y["cite"][4:-1] for m in past for y in m["years"]]
+    # Web pages the answer cites (p5-09): shown as link chips, never drawn on the map, so they leave `cited`.
+    web = [{"id": i, "title": ctx.web_pages[i].get("title", ""), "url": ctx.web_pages[i]["url"],
+            "site": ctx.web_pages[i].get("site", "")} for i in dict.fromkeys(cited) if i in ctx.web_pages]
+    cited = [i for i in cited if not i.startswith("web:")]
+    # Landmarks the answer (then the question) names (p3-10): when the question named no place, the map
+    # frames them and pins each one; with a place, the map keeps the place.
+    named = landmarks.find(f"{answer} {body.question}")
+    marks = [{"name": l.name, "point": list(l.point), "bounds": [list(c) for c in l.bounds]} for l in named[:8]]
+    return {"answer": answer, "notes": notes, "past_same_dates": past, "web": web, "landmarks": marks,
+            "place": place.label if place else None, "window": win.label if win else None,
+            "window_kind": win.kind if win else None,
+            "start": win.window.start.isoformat() if win else None, "end": win.window.end.isoformat() if win else None,
+            "view": _view(place.loc) if place else None, "model": a.route.model,
+            "route_reason": a.route.reason, "tools": a.tools_called, "cited": cited, "calls": a.calls,
+            "asked_back": not ctx.searches,          # nothing searched: PENN asked or chatted; offer a pin
+            "context": _next_context(place, win, body.context)}

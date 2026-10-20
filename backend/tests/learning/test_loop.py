@@ -1,18 +1,24 @@
 """The loop is tested with a fake client that replays scripted model replies,
 so no API key or network is needed."""
 import json
+from datetime import date, datetime
 from types import SimpleNamespace as NS
 
 import pytest
 
 from penn import tools
 from penn.agent import loop
+from penn.agent.context import Context
+from penn.geo import locate
+from penn.timeutil import Window
+from penn.web import tavily
 
 from .conftest import needs
 
 CELLS = [617733123456789]
 WIN = ("2026-10-10T06:00:00-04:00", "2026-10-10T12:00:00-04:00")
 PERMIT = {"event_id": "lane_closures:2025-07887", "title": "Storm Water Installation", "occupancy": "Full Closure"}
+SEARCH = {"place_id": "given_place", "window_id": "given_window"}
 
 
 def tool_call(name, args, id_="call_1"):
@@ -45,36 +51,44 @@ class FakeClient:
 def fake_tools(monkeypatch):
     calls = []
 
-    def search_events(**kw):
-        calls.append(kw)
+    def search_events(cells, start, end, **kw):
+        calls.append({"cells": cells, "start": start, "end": end, **kw})
         return {"events": [PERMIT], "count": 1}
 
-    monkeypatch.setitem(tools.TOOLS, "search_events", search_events)
+    monkeypatch.setattr(tools, "search_events", search_events)
     return calls
 
 
-def run(client, q="What is happening on Judson St Saturday morning?"):
-    return needs(loop.ask, q, CELLS, *WIN, "Judson St", "Saturday Oct 10 morning", client=client)
+def context():
+    start = datetime.fromisoformat(WIN[0])
+    ctx = Context(start, date(2016, 1, 1))
+    ctx.add_place(locate.Resolved(cells=CELLS, label="Judson St", method="test"), {"text": "Judson St"}, "given_place")
+    ctx.add_window(Window(start, datetime.fromisoformat(WIN[1]), "Saturday Oct 10 morning"), "given_window")
+    return ctx
+
+
+def run(client, q="What is happening on Judson St Saturday morning?", history=None, ctx=None):
+    return needs(loop.ask, q, ctx or context(), history=history, client=client)
 
 
 def test_runs_tool_then_answers_with_citation(fake_tools):
     client = FakeClient([
-        tool_call("search_events", {"cells": CELLS, "start": WIN[0], "end": WIN[1]}),
+        tool_call("search_events", SEARCH),
         text("A storm water permit is in effect [id:lane_closures:2025-07887]."),
     ])
     a = run(client)
-    assert fake_tools and fake_tools[0]["cells"] == CELLS
+    assert fake_tools and fake_tools[0]["cells"] == CELLS and fake_tools[0]["start"] == WIN[0]
     assert a.tools_called == ["search_events"]
     assert a.cited == ["lane_closures:2025-07887"]
     assert len(a.calls) == 2 and all("model" in c and "latency_ms" in c for c in a.calls)
-    assert client.requests[0]["tools"], "pass TOOL_SCHEMAS as tools="
+    assert client.requests[0]["tools"], "pass the tool schemas as tools="
     second = client.requests[1]["messages"]
     assert any(m.get("role") == "tool" for m in second), "tool results go back as role='tool' messages"
 
 
 def test_made_up_citation_gets_one_rewrite(fake_tools):
     client = FakeClient([
-        tool_call("search_events", {"cells": CELLS, "start": WIN[0], "end": WIN[1]}),
+        tool_call("search_events", SEARCH),
         text("Closed all day [id:lane_closures:FAKE]."),
         text("A permit is in effect [id:lane_closures:2025-07887]."),
     ])
@@ -84,9 +98,157 @@ def test_made_up_citation_gets_one_rewrite(fake_tools):
 
 def test_gives_up_honestly_after_second_bad_answer(fake_tools):
     client = FakeClient([
-        tool_call("search_events", {"cells": CELLS, "start": WIN[0], "end": WIN[1]}),
+        tool_call("search_events", SEARCH),
         text("Closed [id:lane_closures:FAKE]."),
         text("Still closed [id:lane_closures:FAKE2]."),
     ])
     a = run(client)
     assert a.text == loop.GIVE_UP and a.cited == []
+
+
+def test_history_goes_in_without_old_citations(fake_tools):
+    client = FakeClient([text("Hi! Ask me about a street.")])
+    run(client, q="thanks", history=[("What is on Judson St?", "Note: x\nA permit [id:lane_closures:2025-07887].")])
+    msgs = client.requests[0]["messages"]
+    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "user"]
+    assert "[id:" not in msgs[2]["content"] and "Note:" not in msgs[2]["content"]
+    assert "Context:" in msgs[3]["content"] and "given_place" in msgs[3]["content"]
+
+
+def test_unknown_place_id_is_an_error_not_a_search(fake_tools):
+    client = FakeClient([
+        tool_call("search_events", {"place_id": "p9", "window_id": "given_window"}),
+        text("Which street do you mean?"),
+    ])
+    a = run(client)
+    tool_msg = next(m for m in client.requests[1]["messages"] if m.get("role") == "tool")
+    assert "unknown place_id" in tool_msg["content"] and not fake_tools
+    assert a.text == "Which street do you mean?"
+
+
+def test_handle_cites_are_dropped_not_failed(fake_tools):
+    """A right "no record" answer that cites a place_id/window_id is not failed for citing them."""
+    no_record = "PENN has no record of a block party on Judson St [id:given_place:given_window]."
+    client = FakeClient([tool_call("search_events", SEARCH), text(no_record), text(no_record)])
+    a = run(client, q="Is there a block party on Judson St?")
+    assert a.text == "PENN has no record of a block party on Judson St."
+    assert "given_place" not in client.requests[-1]["messages"][-1]["content"]    # the rewrite asked for no unknown IDs
+
+
+def test_think_tags_are_not_part_of_the_answer(fake_tools):
+    """A reasoning model's <think> block (or only its closing tag) is dropped before the citation check."""
+    client = FakeClient([
+        tool_call("search_events", SEARCH),
+        text("<think>Maybe cite [id:lane_closures:DRAFT]?</think>\nA permit is in effect [id:lane_closures:2025-07887]."),
+    ])
+    a = run(client)
+    assert a.text.splitlines()[0] == "A permit is in effect [id:lane_closures:2025-07887]."
+    assert "<think>" not in a.text and a.cited == ["lane_closures:2025-07887"]
+    assert loop.strip_think("reasoning only</think> Answer.") == "Answer."
+    assert loop.strip_think("Answer.<think>never closed") == "Answer."
+
+
+def test_model_can_be_set_per_turn(fake_tools):
+    client = FakeClient([text("Hi! Ask me about a street.")])
+    a = needs(loop.ask, "hi", context(), client=client, model="org/other-model")
+    assert client.requests[0]["model"] == "org/other-model" and a.route.model == "org/other-model"
+
+
+WEB_PAGE = {"event_id": "web:0a1b2c3d", "title": "Flavors on the Avenue", "url": "https://visitphilly.com/epx",
+            "site": "visitphilly.com", "excerpt": "Flavors on the Avenue, a food festival every spring.",
+            "text": "Flavors on the Avenue, a food festival every spring on East Passyunk Avenue."}
+
+
+@pytest.fixture
+def fake_web(monkeypatch):
+    queries = []
+
+    def search_open(query, **kw):
+        queries.append(query)
+        return {"query": f"{query} Philadelphia", "results": [WEB_PAGE]}
+
+    monkeypatch.setattr(tavily, "search_open", search_open)
+    return queries
+
+
+def test_open_question_goes_to_the_web(fake_tools, fake_web):
+    client = FakeClient([
+        tool_call("search_web", {"query": "East Passyunk food festival"}),
+        text("Yes: Flavors on the Avenue, a spring food festival, according to visitphilly.com [id:web:0a1b2c3d]."),
+    ])
+    a = run(client, q="Does East Passyunk ever have a food festival?")
+    assert fake_web == ["East Passyunk food festival"] and a.cited == ["web:0a1b2c3d"]
+
+
+def test_no_record_is_sent_to_the_web_once(fake_tools, fake_web):
+    """"No record" from City records alone is not an answer to an open question: the loop asks for search_web."""
+    client = FakeClient([
+        tool_call("search_events", SEARCH),
+        text("PENN has no record of a food festival on Judson St."),
+        tool_call("search_web", {"query": "Judson St food festival"}, "call_2"),
+        text("PENN has no City record of one, but visitphilly.com lists Flavors on the Avenue [id:web:0a1b2c3d]."),
+    ])
+    a = run(client, q="Is there ever a food festival on Judson St?")
+    contents = [m.get("content") for m in client.requests[-1]["messages"]]
+    assert contents.count(loop.WEB_NUDGE) == 1
+    assert contents.index(loop.WEB_NUDGE) == contents.index("PENN has no record of a food festival on Judson St.") + 1
+    assert fake_web and a.cited == ["web:0a1b2c3d"]
+
+
+def test_permit_no_record_stays_with_penn(fake_tools, fake_web):
+    no_record = "PENN has no record of a plumbing permit on Judson St."
+    client = FakeClient([tool_call("search_events", SEARCH), text(no_record), text(no_record)])
+    a = run(client, q="Any plumbing permits on Judson St?")
+    assert a.text == no_record and not fake_web
+
+
+class ScriptedClient(FakeClient):
+    """FakeClient whose replies are (message, finish_reason) pairs, or an exception to raise."""
+
+    def create(self, **kwargs):
+        self.requests.append(kwargs)
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        msg, finish = reply
+        return NS(choices=[NS(message=msg, finish_reason=finish)], usage=NS(prompt_tokens=10, completion_tokens=5))
+
+
+def test_cut_off_answer_is_rewritten_not_accepted(fake_tools):
+    client = ScriptedClient([
+        (tool_call("search_events", SEARCH), "tool_calls"),
+        (text("A storm water permit is in effect [id:lane_closures:2025-07887] and also"), "length"),
+        (text("A storm water permit is in effect [id:lane_closures:2025-07887]."), "stop"),
+    ])
+    a = run(client)
+    assert a.text.startswith("A storm water permit is in effect") and not a.text.endswith("and also")
+    assert "cut off" in client.requests[-1]["messages"][-1]["content"]
+    assert client.requests[0]["max_tokens"] and client.requests[0]["timeout"]
+
+
+def test_timeout_gives_an_honest_answer(fake_tools):
+    import httpx
+    from openai import APITimeoutError
+    client = ScriptedClient([APITimeoutError(request=httpx.Request("POST", "https://x"))])
+    a = run(client)
+    assert a.text == loop.TIMED_OUT and a.calls[0]["error"] == "timeout"
+
+
+def test_permit_groups_must_be_counted_once():
+    group = {"events": [{"title": "PGW Leak", "count": 3, "permits": [
+        {"event_id": "lane_closures:A"}, {"event_id": "lane_closures:B"}, {"event_id": "lane_closures:C"}]}]}
+    folded = loop.permit_groups(group)
+    assert folded == [(3, {"lane_closures:A", "lane_closures:B", "lane_closures:C"}, "PGW Leak")]
+    cited = {"lane_closures:A"}
+    assert loop._uncounted("PGW Leak, permits Jul 10 to Feb 23 [id:lane_closures:A]", cited, folded)
+    assert not loop._uncounted("Three PGW Leak permits are in effect [id:lane_closures:A]", cited, folded)
+    assert not loop._uncounted("Something else [id:lane_closures:Z]", {"lane_closures:Z"}, folded)
+
+
+def test_permit_line_is_added_to_full_answers_citing_permits():
+    cite = "A permit is in effect Oct 6 to Dec 31 [id:lane_closures:2026-22421]."
+    assert loop._add_permit_line(cite, ["full"]).endswith(loop.PERMIT_LINE)
+    assert loop._add_permit_line(cite, ["brief"]) == cite
+    already = cite + " Permits list dates only, not daily hours or which days work happens."
+    assert loop._add_permit_line(already, ["full"]) == already
+    assert loop._add_permit_line("Closure [id:event_closures:x].", ["full"]) == "Closure [id:event_closures:x]."
