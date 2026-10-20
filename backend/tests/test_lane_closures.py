@@ -55,3 +55,44 @@ def test_placeholder_expiry_flagged():
 def test_snapshot_counts_segments():
     rows = snapshot_rows([feat(1, "P1", SEG_A), feat(2, "P1", SEG_B)], date(2026, 10, 5))
     assert len(rows) == 1 and rows[0]["segment_count"] == 2
+
+
+# --- fetch_features against a fake ArcGIS server -------------------------------------------
+
+import httpx
+import pytest
+from penn.ingestion import lane_closures as lc
+
+
+def fake_client(count: int, pages: list, error_on_page: int | None = None) -> httpx.Client:
+    """pages[i] is the number of features on page i; exceededTransferLimit is set on all but the last."""
+    def handler(req: httpx.Request) -> httpx.Response:
+        q = req.url.params
+        if q.get("returnCountOnly") == "true":
+            return httpx.Response(200, json={"count": count})
+        i = int(q["resultOffset"]) // lc.LANE_CLOSURES_PAGE
+        if i == error_on_page:
+            return httpx.Response(200, json={"error": {"code": 500, "message": "boom"}})
+        n = pages[i] if i < len(pages) else 0
+        body = {"type": "FeatureCollection", "features": [{"properties": {"objectid": j}} for j in range(n)]}
+        if i < len(pages) - 1:
+            body["properties"] = {"exceededTransferLimit": True}
+        return httpx.Response(200, json=body)
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_fetch_reads_every_page():
+    page = lc.LANE_CLOSURES_PAGE
+    assert len(list(lc.fetch_features(fake_client(page + 5, [page, 5])))) == page + 5
+
+
+def test_fetch_raises_on_error_body_with_http_200():
+    page = lc.LANE_CLOSURES_PAGE
+    with pytest.raises(lc.FetchError, match="ArcGIS error"):
+        list(lc.fetch_features(fake_client(page + 5, [page, 5], error_on_page=1)))
+
+
+def test_fetch_raises_when_total_is_short():
+    page = lc.LANE_CLOSURES_PAGE
+    with pytest.raises(lc.FetchError, match="layer reports"):
+        list(lc.fetch_features(fake_client(page + 5, [page])))
