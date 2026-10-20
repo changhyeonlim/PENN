@@ -191,6 +191,63 @@ def test_loose_type_only_in_chains_and_noted():
     assert res.notes == ["read LARCHWOOD ST as LARCHWOOD AVE"]
 
 
+# Directions the centerline does not use
+
+DIRECTED = SEGMENTS + [
+    # Jefferson Street has no direction in the centerline; notices write "W. Jefferson Street".
+    seg(60, "", "JEFFERSON", "ST", (20, 20), (21, 20)),
+    seg(61, "", "JEFFERSON", "ST", (21, 20), (22, 20)),
+    seg(62, "N", "5TH", "ST", (20, 19), (20, 20)),
+    seg(63, "N", "AMERICAN", "ST", (22, 19), (22, 20)),
+    seg(64, "N", "AMERICAN", "ST", (22, 20), (22, 22)),
+    # Hancock Street is N or S; notices write "W. Hancock Street". Only N meets Norris.
+    seg(70, "W", "NORRIS", "ST", (22, 22), (23, 22)),
+    seg(71, "W", "NORRIS", "ST", (23, 22), (24, 22)),
+    seg(72, "N", "HANCOCK", "ST", (24, 21), (24, 22)),
+    seg(73, "S", "HANCOCK", "ST", (24, 10), (24, 11)),
+    # Pike Street is N and S, and both meet Main Street: "W. Pike Street" is ambiguous there.
+    seg(80, "", "MAIN", "ST", (30, 0), (30, 2)),
+    seg(81, "", "MAIN", "ST", (30, 2), (30, 4)),
+    seg(82, "", "OAK", "ST", (29, 0), (30, 0)),
+    seg(83, "N", "PIKE", "ST", (29, 2), (30, 2)),
+    seg(84, "S", "PIKE", "ST", (29, 4), (30, 4)),
+]
+
+
+def test_direction_dropped_when_centerline_has_none():
+    segs, note = Network(DIRECTED).lookup("W. Jefferson Street")
+    assert sorted(s.seg_id for s in segs) == [60, 61]
+    assert note == "read W JEFFERSON ST as JEFFERSON ST"
+    res = resolve({"street": "W. Jefferson Street", "from_street": "N. 5th Street",
+                   "to_street": "N. American Street"}, Network(DIRECTED))
+    assert ids(res) == [60, 61]
+    assert res.notes == ["read W JEFFERSON ST as JEFFERSON ST"]
+    # As a cross street too.
+    res = resolve({"street": "N. American Street", "from_street": "W. Jefferson Street",
+                   "to_street": "W. Norris Street"}, Network(DIRECTED))
+    assert ids(res) == [64]
+    assert res.notes == ["read W JEFFERSON ST as JEFFERSON ST"]
+
+
+def test_other_direction_only_when_the_chain_picks_it():
+    n = Network(DIRECTED)
+    # Alone, nothing says whether W Hancock is N or S Hancock.
+    assert n.lookup("W. Hancock Street") == ([], "no centerline segment named W HANCOCK ST")
+    assert not resolve({"street": "W. Hancock Street"}, n).ok
+    res = resolve({"street": "W. Norris Street", "from_street": "W. Hancock Street",
+                   "to_street": "N. American Street"}, n)
+    assert ids(res) == [70, 71]
+    assert res.notes == ["read W HANCOCK ST as N HANCOCK ST"]
+
+
+def test_other_direction_not_guessed_when_several_fit():
+    res = resolve({"street": "Main Street", "from_street": "Oak Street",
+                   "to_street": "W. Pike Street"}, Network(DIRECTED))
+    assert not res.ok
+    assert res.reason.startswith("no centerline segment named W PIKE ST")
+    assert "none chosen" in res.reason
+
+
 # Events
 
 

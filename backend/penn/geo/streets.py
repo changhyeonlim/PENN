@@ -28,6 +28,7 @@ Resolution kinds:
 from __future__ import annotations
 
 import heapq
+import itertools
 import json
 import math
 import re
@@ -315,13 +316,67 @@ class Network:
                 segs = self.find(alt)
                 if segs:
                     return segs, f"read {street} as {alt}"
+        if street.dir:
+            # Notices add directions the centerline does not use: "W. Jefferson Street" is
+            # JEFFERSON ST. Other directions (N/S HANCOCK ST) are left to chain(), which can check.
+            bare = street._replace(dir="")
+            segs = [s for s in self.find(bare) if not s.street.dir]
+            if segs:
+                return segs, f"read {street} as {bare}"
         return [], f"no centerline segment named {street}"
+
+    def other_directions(self, text: str) -> list[tuple[list[Segment], str]]:
+        """For a name with a direction the centerline lacks ("W. Hancock Street"), the segments
+        under each direction it does have, with a note: N HANCOCK ST, S HANCOCK ST."""
+        street = normalize(text)
+        if street is None or not street.dir:
+            return []
+        out = []
+        for d in sorted(set(DIR_WORDS) - {street.dir}):
+            alt = street._replace(dir=d)
+            segs = self.find(alt)
+            if segs:
+                out.append((segs, f"read {street} as {alt}"))
+        return out
 
     def chain(self, street: str, frm: str, to: str,
               notes: list[str] | None = None) -> tuple[list[Segment], str]:
         """Segments of `street` between its intersections with `frm` and `to`.
-        Name substitutions are appended to `notes`."""
-        segs, note = self.lookup(street, self.loose_types)
+        Name substitutions are appended to `notes`.
+
+        A name whose direction the centerline lacks may take another direction it has, but only
+        if exactly one choice of directions yields a chain: the intersections check the choice."""
+        path, why = self._chain(street, frm, to, notes, {})
+        if path:
+            return path, why
+        texts = [street, _cross_part(frm, street), _cross_part(to, street)]
+        choices = [[None] + self.other_directions(t) if not self.lookup(t, self.loose_types)[0]
+                   else [None] for t in texts]
+        if all(len(c) == 1 for c in choices):
+            return path, why
+        wins: dict[tuple[int, ...], tuple[list[Segment], list[str]]] = {}
+        for combo in itertools.product(*choices):
+            if not any(combo):
+                continue
+            trial: list[str] = []
+            p, _ = self._chain(street, frm, to, trial,
+                               {i: c for i, c in enumerate(combo) if c is not None})
+            if p:
+                wins.setdefault(tuple(sorted(s.seg_id for s in p)), (p, trial))
+        if len(wins) != 1:
+            if wins:
+                why += f" ({len(wins)} choices of direction give different chains; none chosen)"
+            return [], why
+        p, trial = next(iter(wins.values()))
+        if notes is not None:
+            notes.extend(n for n in trial if n not in notes)
+        return p, ""
+
+    def _chain(self, street: str, frm: str, to: str, notes: list[str] | None,
+               overrides: dict[int, tuple[list[Segment], str]]) -> tuple[list[Segment], str]:
+        """chain() for fixed names. `overrides` replaces the lookup of the street (0), `frm` (1)
+        or `to` (2) with given (segments, note)."""
+        segs, note = overrides.get(0) or self.lookup(street, self.loose_types)
         if not segs:
             return [], note
         found = [(note, normalize(street).key, segs)]
@@ -331,9 +386,9 @@ class Network:
             return [], reason + (f" (tried: {'; '.join(tried)})" if tried else "")
 
         ends = []
-        for cross in (frm, to):
+        for i, cross in enumerate((frm, to), 1):
             cross = _cross_part(cross, street)
-            other, note = self.lookup(cross, self.loose_types)
+            other, note = overrides.get(i) or self.lookup(cross, self.loose_types)
             if not other:
                 return fail(note)
             found.append((note, normalize(cross).key, other))
