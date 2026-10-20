@@ -46,6 +46,10 @@ class Settings:
     model_ultra: str = field(default_factory=lambda: os.getenv("MODEL_ULTRA", "nvidia/nemotron-3-ultra-550b-a55b"))
 
     ais_gatekeeper_key: str = field(default_factory=lambda: os.getenv("AIS_GATEKEEPER_KEY", ""))
+    # Ticketmaster Discovery API consumer key (developer.ticketmaster.com). TICKETMASTER_API is the
+    # name an earlier .env used.
+    ticketmaster_api_key: str = field(default_factory=lambda: (
+        os.getenv("TICKETMASTER_API_KEY") or os.getenv("TICKETMASTER_API") or "").strip())
 
     # Demo mode: a fixed "now" (ISO 8601 with offset, e.g. 2026-10-17T09:00:00-04:00) so a frozen
     # snapshot (jobs/freeze_demo.py, CLICKHOUSE_DB=penn_demo) answers the same way on any day.
