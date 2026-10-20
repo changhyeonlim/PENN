@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import os
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 
 from . import db, tools
@@ -13,6 +16,15 @@ from . import timeutil
 from .timeutil import resolve_window
 
 app = FastAPI(title="PENN API")
+# The map (Next.js) calls this API from another origin. PENN_CORS_ORIGINS lists the allowed ones.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("PENN_CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
+# The city-wide map layer is ~2 MB of JSON and ~260 KB gzipped.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 def _default_window(days: int = 7) -> tuple[str, str]:
