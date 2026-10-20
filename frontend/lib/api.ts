@@ -16,6 +16,7 @@ export type AgentReply = {
   answer?: string; notes?: string[]; needs_pin?: boolean; outside?: boolean; message?: string;
   place?: string | null; window?: string; window_kind?: "before_records" | "past" | "current" | "future";
   start?: string; end?: string; view?: View | null; model?: string | null; tools?: string[]; cited?: string[];
+  web?: { id: string; title: string; url: string; site: string }[];   // web pages the answer cites (p5-09)
 };
 
 export async function getJSON<T>(path: string, init?: RequestInit): Promise<T> {

@@ -510,7 +510,7 @@ export default function Page() {
                   {reply?.answer && (
                     <>
                       {kindNote && <p className="kind-note">{kindNote}</p>}
-                      <AnswerText text={reply.answer} titles={titles} selected={selected?.event_id ?? null} onCite={onCite} />
+                      <AnswerText text={reply.answer} titles={titles} selected={selected?.event_id ?? null} onCite={onCite} web={reply.web} />
                       {order.length > 0 && <p className="sheet-foot">Numbers open the permit. Highlighted streets on the map are the ones cited.</p>}
                     </>
                   )}
