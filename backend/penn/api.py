@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 
-from . import db, tools
+from . import db, overlaps, tools
 from .config import LOCAL_TZ
 from .geo import locate
 from . import timeutil
@@ -39,28 +39,45 @@ def health():
 
 @app.get("/freshness")
 def freshness():
-    return db.query("SELECT source, max(finished_at) AS last_ok FROM penn.ingest_runs WHERE ok GROUP BY source")
+    """The last successful load per source, in Philadelphia time with offset: the map header's stamps."""
+    return tools._jsonable(db.query(
+        "SELECT source, max(finished_at) AS last_ok FROM ingest_runs WHERE ok GROUP BY source"))
+
+
+# A runaway guard, not a page size: the whole city has had about 2,600 active records in a 30-day
+# window. A response that hits it says so ("truncated"), so the map can warn instead of silently
+# dropping records.
+MAP_LIMIT = 20_000
 
 
 @app.get("/map")
-def map_layer(min_lat: float, min_lon: float, max_lat: float, max_lon: float,
+def map_layer(min_lat: float | None = None, min_lon: float | None = None,
+              max_lat: float | None = None, max_lon: float | None = None,
               start: str | None = None, end: str | None = None):
-    """Non-311 events whose centroid is in the viewport and active in the window."""
+    """Non-311 events active in the window, with their centroids. Without a box, the whole city: the
+    map loads it once per window and pans and counts on the client."""
     s, e = (start, end) if start and end else _default_window()
     p = tools.window_params(s, e)
+    box = None not in (min_lat, min_lon, max_lat, max_lon)
+    where = "AND centroid_lat BETWEEN %(a)s AND %(b)s AND centroid_lon BETWEEN %(c)s AND %(d)s" if box else ""
     rows = db.query(
-        f"""SELECT {tools.EVENT_FIELDS} FROM penn.events FINAL
-            WHERE source != 'philly_311'
-              AND centroid_lat BETWEEN %(a)s AND %(b)s AND centroid_lon BETWEEN %(c)s AND %(d)s
-              AND {tools.ACTIVE_FILTER} LIMIT 2000""",
+        f"""SELECT {tools.EVENT_FIELDS}, centroid_lat, centroid_lon, seg_ids FROM events FINAL
+            WHERE source != 'philly_311' {where}
+              AND {tools.ACTIVE_FILTER} LIMIT {MAP_LIMIT + 1}""",
         {"a": min_lat, "b": max_lat, "c": min_lon, "d": max_lon, **p},
     )
-    return {"events": tools._jsonable(rows), "window": {"start": s, "end": e}}
+    truncated, rows = len(rows) > MAP_LIMIT, rows[:MAP_LIMIT]
+    # The same event listed by visitphilly and Ticketmaster: the map draws one flag for each pair. A block
+    # party permit under an announced event closure: the map draws the closure once.
+    same, covered = overlaps.same_as(rows), overlaps.covered(rows)
+    events = [{k: v for k, v in r.items() if k != "seg_ids"} for r in tools._jsonable(rows)]   # matching only
+    return {"events": events, "truncated": truncated, "same_as": same, "covered": covered,
+            "window": {"start": s, "end": e}}
 
 
 @app.get("/events/{event_id}")
 def event(event_id: str):
-    rows = db.query(f"SELECT {tools.EVENT_FIELDS} FROM penn.events FINAL WHERE event_id = %(id)s", {"id": event_id})
+    rows = db.query(f"SELECT {tools.EVENT_FIELDS} FROM events FINAL WHERE event_id = %(id)s", {"id": event_id})
     if not rows:
         raise HTTPException(404, "No such event")
     return tools._jsonable(rows)[0]
