@@ -167,25 +167,62 @@ button { cursor: pointer; }
 .legend li { display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 9px; }
 .legend li.none { color: var(--muted); }
 .legend li.none .swatch { opacity: .45; }
+/* Each category row is a show/hide button; "Only" appears over the count on hover or keyboard focus. */
+.legend li.legend-cat { display: block; }
+.legend-line { position: relative; }
+.legend-row {
+  width: calc(100% + 12px); margin: 0 -6px; padding: 2px 6px; border: 0; border-radius: 6px; background: none;
+  display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 9px; text-align: left; font-size: 14px;
+}
+.legend-row:hover { background: var(--wash); }
+.legend-cat.off .legend-label, .legend-hoods.off .legend-label { color: var(--muted); text-decoration: line-through; text-decoration-color: #B8BEC7; }
+.legend-cat.off .swatch, .legend-hoods.off .swatch { opacity: .3; }
+.legend-cat.off .legend-count { opacity: .6; }
+.legend-cat.waiting .swatch { opacity: .45; }
+.legend-zoom { font-size: 12px; font-style: italic; }
+.legend-only {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  border: 0; border-radius: 4px; padding: 1px 6px; background: var(--surface); box-shadow: 0 0 0 1px var(--rule);
+  font-size: 12px; font-weight: 700; color: var(--ink); opacity: 0; pointer-events: none;
+}
+.legend-line:hover .legend-only, .legend-only:focus-visible { opacity: 1; pointer-events: auto; }
+.legend-only:hover { background: var(--ink); color: #fff; box-shadow: none; }
+.legend-cat .legend-meaning { display: block; margin: 0 0 4px 37px; }
+.legend-hoods { padding: 5px 12px; border-top: 1px solid var(--rule); }
+/* The fading, explained without a click: today on the left, fainter toward "coming up". */
+/* The line weights, one short row: the same in every reason's color. */
+.legend-weights {
+  display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; border-top: 1px solid var(--rule);
+  font-size: 12.5px; color: var(--muted); cursor: help;
+}
+.legend-weight { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.legend-weight.waiting { opacity: .4; }   /* not drawn until street zoom */
+.legend-explain .legend-meaning { grid-column: 2 / -1; margin: -3px 0 3px; }
+.legend-time {
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--rule);
+  font-size: 13px; color: var(--muted); cursor: help;
+}
+.legend-time-label:first-child { color: var(--ink); font-weight: 700; }
+.legend-time-label { white-space: nowrap; }
+.legend-time-ramp { display: flex; gap: 2px; }
+.legend-hoods .legend-row { grid-template-columns: 28px 1fr; }
 .legend-count { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
 .legend-cited { border-top: 1px solid var(--rule); padding-top: 6px; margin-top: 2px; }
-.legend-toggle {
-  display: grid; grid-template-columns: auto 28px 1fr; align-items: center; gap: 8px;
-  padding: 7px 12px; border-top: 1px solid var(--rule); cursor: pointer;
-}
-.legend-toggle input { margin: 0; width: 15px; height: 15px; accent-color: var(--ink); }
 .legend.explaining { width: 300px; max-height: calc(100vh - var(--bar-h) - 130px); overflow-y: auto; }
 .legend-meaning { grid-column: 2 / -1; font-size: 13px; color: var(--muted); line-height: 1.35; margin: -2px 0 4px; }
 .legend-explain { border-top: 1px solid var(--rule); padding-top: 4px; }
 .legend-explain ul { padding-bottom: 6px; }
 .legend-sub { margin: 6px 12px 5px; font-size: 13px; font-weight: 700; }
 .legend-note { margin: 2px 12px 8px; font-size: 13px; color: var(--muted); line-height: 1.35; }
-.legend-more {
-  display: block; width: 100%; border: 0; border-top: 1px solid var(--rule); background: none;
-  padding: 7px 12px 8px; text-align: left; font-size: 13px; color: var(--ink); text-decoration: underline; text-underline-offset: 3px;
-  border-radius: 0 0 10px 10px;
+/* Footer row: the explanations switch, and "Show all" on the right while any kind is hidden. */
+.legend-foot { display: flex; border-top: 1px solid var(--rule); border-radius: 0 0 10px 10px; overflow: hidden; }
+.legend-more, .legend-reset {
+  border: 0; background: none; padding: 7px 12px 8px; font-size: 13px; color: var(--ink);
+  text-decoration: underline; text-underline-offset: 3px; white-space: nowrap;
 }
-.legend-more:hover { background: var(--wash); }
+.legend-more { flex: 1 1 auto; text-align: left; padding-right: 6px; }
+.legend-reset { flex: none; font-weight: 700; padding-left: 6px; }
+.legend-more:hover, .legend-reset:hover { background: var(--wash); }
 
 .askbar {
   pointer-events: auto; height: var(--bar-h); background: var(--ink); color: #fff;

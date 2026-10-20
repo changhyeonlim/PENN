@@ -5,6 +5,7 @@ export type PennEvent = {
   organization: string; occupancy: string; source_url: string; source_authority: string;
   claim_certainty: string; start_date: string | null; end_date: string | null;
   start_ts: string | null; end_ts: string | null; open_ended: boolean; status: string; geometry_wkt: string;
+  centroid_lat?: number; centroid_lon?: number;   // /map only: what the legend's "in view" counts by
 };
 
 /** Center and bounds of a resolved place, as /locate and /agent return them. */

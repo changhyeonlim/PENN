@@ -40,6 +40,13 @@ const HOODS_URL = "/neighborhoods.geojson";
 const HOOD_LAYERS = ["hood-line", "hood-focus", "hood-label"];
 const SIGN = "#1E5B44";   // --sign in globals.css
 const PRESETS = [{ days: 1, label: "24 hours" }, { days: 7, label: "7 days" }, { days: 30, label: "30 days" }];
+// How long a window's city-wide records are reused before the map asks again: "the next 7 days"
+// moves with the clock, and the daily load changes the data once a day.
+const CITY_TTL_MS = 10 * 60 * 1000;
+// same_as: [visitphilly id, ticketmaster id, reason] for one event listed by both (backend/penn/overlaps.py).
+// covered: [block party permit id, event closure id] where the City's announced closure already closes every
+// block of the permit that day: one closure, drawn once, as the announcement.
+type CityLayer = { events: PennEvent[]; truncated?: boolean; same_as?: [string, string, string][]; covered?: [string, string][] };
 
 type Status = "idle" | "locating" | "reading" | "done" | "error";
 type Place = { name: string | null; window?: string };
@@ -102,6 +109,7 @@ export default function Page() {
 
   const [win, setWin] = useState(7);
   const [events, setEvents] = useState<PennEvent[]>([]);
+  const [zoomedOut, setZoomedOut] = useState(false);   // below MINOR_ZOOM: the minor kinds are not drawn
   const [mapLoading, setMapLoading] = useState(true);
   const [mapError, setMapError] = useState("");
 
@@ -116,6 +124,9 @@ export default function Page() {
   const [picking, setPicking] = useState(false);
 
   const [showHoods, setShowHoods] = useState(true);
+  // Map key rows switched off: their records are left out of the drawn layer (and so out of hover and click).
+  const [hiddenCats, setHiddenCats] = useState<ReadonlySet<Category>>(new Set());
+  const hiddenRef = useRef(hiddenCats); hiddenRef.current = hiddenCats;
   const showHoodsRef = useRef(showHoods); showHoodsRef.current = showHoods;
   const [panelOpen, setPanelOpen] = useState(false);
   const [choices, setChoices] = useState<PennEvent[]>([]);
@@ -152,25 +163,62 @@ export default function Page() {
     map.current?.fitBounds(b, { padding: padding(expectSheet), maxZoom, duration: reduceMotion() ? 0 : 1600, essential: true });
   }, [padding]);
 
+  // The whole city's records for each time window, fetched once (about 2,600 records, 300 KB gzipped)
+  // and kept for CITY_TTL_MS. Panning and zooming never go back to the server, so nothing pops in at the
+  // edges; a window's request is shared while it is in flight.
+  const cityCache = useRef(new Map<number, { at: number; req: Promise<CityLayer> }>());
+  const cityEvents = useRef<PennEvent[]>([]);
+  /** What the map draws: the kinds switched off in the key left out, and records already over. */
+  const drawn = useCallback(() => cityEvents.current.filter(e => !hiddenRef.current.has(category(e)) && !isOver(e)), []);
+
+  /** Put the city's records on the map, minus the categories switched off in the key. */
+  const drawCity = useCallback(() => {
+    const shown = drawn();
+    (map.current?.getSource("events") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features: toFeatures(shown) });
+  }, [drawn]);
+
+  const fetchCity = useCallback((days: number): Promise<CityLayer> => {
+    const hit = cityCache.current.get(days);
+    if (hit && Date.now() - hit.at < CITY_TTL_MS) return hit.req;
+    const { start, end } = range(days);
+    const req = getJSON<CityLayer>(`/map?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
+    cityCache.current.set(days, { at: Date.now(), req });
+    req.catch(() => cityCache.current.delete(days));
+    return req;
+  }, []);
+
+  /** The legend's "in view" counts: records whose centroid is on screen, as the server's box used to pick. */
+  const countInView = useCallback(() => {
+    const m = map.current;
+    if (!m) return;
+    const b = m.getBounds();
+    const out = m.getZoom() < MINOR_ZOOM;
+    setZoomedOut(out);
+    // Switched-off rows keep their counts. Zoomed out, the key counts only what is drawn: no minor lines.
+    setEvents(cityEvents.current.filter(e => e.centroid_lon != null && e.centroid_lat != null && !isOver(e)
+      && !(out && isMinor(e)) && b.contains([e.centroid_lon, e.centroid_lat])));
+  }, []);
+
   const load = useCallback(() => {
     const m = map.current;
     if (!m || !m.getSource("events")) return;
     const seq = ++loadSeq.current;
-    const b = m.getBounds();
-    const { start, end } = range(winRef.current);
+    const days = winRef.current;
     setMapLoading(true);
-    getJSON<{ events: PennEvent[] }>(`/map?min_lat=${b.getSouth()}&min_lon=${b.getWest()}&max_lat=${b.getNorth()}` +
-      `&max_lon=${b.getEast()}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`)
-      .then(({ events }) => {
+    fetchCity(days)
+      .then(({ events, truncated, same_as, covered }) => {
         if (seq !== loadSeq.current) return;
         events.forEach(e => known.current.set(e.event_id, e));
-        setEvents(events);
-        setMapError("");
-        (m.getSource("events") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features: toFeatures(events) });
+        cityEvents.current = events;
+        setMapError(truncated ? "The map is showing only part of the city's records for this window." : "");
+        drawCity();
+        countInView();
+        // Warm the other windows so switching between them is instant.
+        PRESETS.forEach(p => { if (p.days !== days) fetchCity(p.days).catch(() => {}); });
       })
       .catch(err => { if (seq === loadSeq.current) setMapError(`The map could not load permits: ${err.message}. Check that the PENN API is running.`); })
       .finally(() => { if (seq === loadSeq.current) setMapLoading(false); });
-  }, []);
+  }, [fetchCity, countInView, drawCity]);
 
   const select = useCallback((e: PennEvent, opts: { focus?: boolean } = {}) => {
     setSelected(e);
@@ -350,11 +398,20 @@ export default function Page() {
       (m.getSource("selected") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features: toFeatures(h) });
     });
     let t: ReturnType<typeof setTimeout>;
-    m.on("moveend", () => { clearTimeout(t); t = setTimeout(load, 150); });
+    m.on("moveend", () => { clearTimeout(t); t = setTimeout(countInView, 150); });
     return () => { clearTimeout(t); m.remove(); map.current = null; };   // StrictMode mounts twice in development
-  }, [load, select, closePanel]);
+  }, [load, countInView, select, closePanel]);
 
   useEffect(() => { load(); }, [win, load]);
+
+
+  useEffect(() => { drawCity(); countInView(); }, [hiddenCats, drawCity, countInView]);
+
+  // A closure leaves the map when its own end time passes, even with the page left open: redraw each minute.
+  useEffect(() => {
+    const t = setInterval(() => { drawCity(); countInView(); }, 60_000);
+    return () => clearInterval(t);
+  }, [drawCity, countInView]);
 
   useEffect(() => { if (map.current?.getLayer("hood-line")) showHoodsOn(map.current, showHoods); }, [showHoods]);
 
@@ -545,6 +602,7 @@ export default function Page() {
             </section>
           )}
           <Legend counts={counts} bands={bands} citedCount={citedIds.length} hoods={showHoods} onHoods={setShowHoods}
+            hidden={hiddenCats} onHidden={setHiddenCats} zoomedOut={zoomedOut}
             loading={mapLoading && !events.length} />
         </div>
 
