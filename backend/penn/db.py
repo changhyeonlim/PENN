@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from functools import lru_cache
+import threading
 
 import clickhouse_connect
 
@@ -18,8 +18,19 @@ EVENT_COLUMNS = [
 ]
 
 
-@lru_cache(maxsize=1)
+_local = threading.local()
+
+
 def client():
+    """One client per thread: a clickhouse-connect session refuses concurrent queries, and
+    FastAPI runs sync endpoints (and the eval runs questions) on several threads."""
+    c = getattr(_local, "client", None)
+    if c is None:
+        c = _local.client = _new_client()
+    return c
+
+
+def _new_client():
     return clickhouse_connect.get_client(
         host=settings.clickhouse_host,
         port=settings.clickhouse_port,
