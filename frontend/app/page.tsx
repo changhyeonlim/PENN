@@ -70,6 +70,19 @@ const flagOpacity = ["max", 0.45, todayOpacity] as maplibregl.ExpressionSpecific
 // Color says why: construction, an event or a block party (or a no-parking curb).
 const REASON_COLOR = ["match", ["get", "cat"], "event", COLOR.event, "blockparty", COLOR.blockparty,
   "parking", COLOR.parking, COLOR.construction] as maplibregl.ExpressionSpecification;
+// While an answer is open, the records it does not cite turn grey: not fainter, since fainter means "later" on
+// this map, and an uncited closure in effect today must not read as one coming up.
+const OUT_OF_ANSWER = { color: "#9AA3AE", opacity: 0.5, flag: 0.3 };
+type Expr = maplibregl.ExpressionSpecification;
+// The city layers an answer greys: the paint properties that fade, each one's own opacity, and its own color.
+const FOCUS: { id: string; opacity: string[]; base: Expr; color?: { prop: string; value: string | Expr }; casing?: boolean }[] = [
+  ...["parking", "sidewalk", "lane", "full"]
+    .map(id => ({ id, opacity: ["line-opacity"], base: todayOpacity, color: { prop: "line-color", value: REASON_COLOR } })),
+  { id: "full-casing", opacity: ["line-opacity"], base: todayOpacity, casing: true },
+  ...["points", "points-minor"].map(id => ({ id, opacity: ["circle-opacity", "circle-stroke-opacity"], base: todayOpacity,
+    color: { prop: "circle-color", value: REASON_COLOR } })),
+  { id: "listings", opacity: ["icon-opacity"], base: flagOpacity },
+];
 
 /** The map's own window. Questions resolve their own dates on the server and never change it. */
 function range(days: number): { start: string; end: string } {
@@ -149,6 +162,11 @@ export default function Page() {
   const [hiddenCats, setHiddenCats] = useState<ReadonlySet<Category>>(new Set());
   const hiddenRef = useRef(hiddenCats); hiddenRef.current = hiddenCats;
   const showHoodsRef = useRef(showHoods); showHoodsRef.current = showHoods;
+  // While an answer that cites records is open, everything it does not cite steps back. Hiding the
+  // answer brings the whole map back.
+  const focus = status === "done" && sheetOpen && citedIds.length ? citedIds : null;
+  const focusRef = useRef(focus); focusRef.current = focus;
+  const focusKey = focus?.join(",") ?? "";
   const [panelOpen, setPanelOpen] = useState(false);
   const [choices, setChoices] = useState<PennEvent[]>([]);
   const [selected, setSelected] = useState<PennEvent | null>(null);
@@ -399,6 +417,7 @@ export default function Page() {
           "icon-allow-overlap": true, "icon-ignore-placement": true, "symbol-sort-key": ["-", 0, ["get", "days"]] },   // today's on top
         paint: { "icon-opacity": flagOpacity } });
       showHoodsOn(m, showHoodsRef.current);
+      focusOn(m, focusRef.current);
       load();
     };
     m.on("style.load", init);
@@ -466,6 +485,8 @@ export default function Page() {
   }, [drawCity, countInView]);
 
   useEffect(() => { if (map.current?.getLayer("hood-line")) showHoodsOn(map.current, showHoods); }, [showHoods]);
+
+  useEffect(() => { if (map.current?.getLayer("full")) focusOn(map.current, focusRef.current); }, [focusKey]);
 
   // Outline the neighborhood an answer is about, when the place is one ("Fairmount", "Logan Square").
   useEffect(() => {
@@ -686,6 +707,19 @@ export default function Page() {
 function showHoodsOn(m: maplibregl.Map, on: boolean) {
   HOOD_LAYERS.forEach(id => m.getLayer(id) && m.setLayoutProperty(id, "visibility", on ? "visible" : "none"));
   if (m.getLayer("label_other")) m.setLayoutProperty("label_other", "visibility", on ? "none" : "visible");
+}
+
+/** Fade every record not in cited; null restores each layer's own opacity. */
+function focusOn(m: maplibregl.Map, cited: string[] | null) {
+  const keep = cited?.length ? ["in", ["get", "event_id"], ["literal", cited]] : null;
+  FOCUS.forEach(({ id, opacity, base, color, casing }) => {
+    if (!m.getLayer(id)) return;
+    // A white casing under a grey line would read as a road, so it goes; flags can't turn grey, so they recede.
+    const out = casing ? 0 : id === "listings" ? OUT_OF_ANSWER.flag : OUT_OF_ANSWER.opacity;
+    const o = (keep ? ["case", keep, base, out] : base) as Expr;
+    opacity.forEach(p => m.setPaintProperty(id, p, o));
+    if (color) m.setPaintProperty(id, color.prop, keep ? ["case", keep, color.value, OUT_OF_ANSWER.color] : color.value);
+  });
 }
 
 const MAX_TIP_PLACES = 2;
