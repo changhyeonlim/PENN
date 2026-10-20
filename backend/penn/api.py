@@ -9,13 +9,14 @@ from pydantic import BaseModel
 from . import db, tools
 from .config import LOCAL_TZ
 from .geo import locate
+from . import timeutil
 from .timeutil import resolve_window
 
 app = FastAPI(title="PENN API")
 
 
 def _default_window(days: int = 7) -> tuple[str, str]:
-    now = datetime.now(LOCAL_TZ)
+    now = timeutil.now_local()
     return now.isoformat(), (now + timedelta(days=days)).isoformat()
 
 
@@ -56,7 +57,7 @@ def event(event_id: str):
 @app.get("/timeline")
 def timeline(lat: float, lon: float, years: int = 3):
     loc = locate.from_click(lon, lat)
-    end = datetime.now(LOCAL_TZ)
+    end = timeutil.now_local()
     start = end.replace(year=end.year - years)
     return tools.get_location_timeline(loc.cells, start.isoformat(), end.isoformat()) | {"place": loc.label}
 

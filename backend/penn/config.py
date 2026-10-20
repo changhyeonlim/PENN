@@ -47,5 +47,9 @@ class Settings:
 
     ais_gatekeeper_key: str = field(default_factory=lambda: os.getenv("AIS_GATEKEEPER_KEY", ""))
 
+    # Demo mode: a fixed "now" (ISO 8601 with offset, e.g. 2026-10-17T09:00:00-04:00) so a frozen
+    # snapshot (jobs/freeze_demo.py, CLICKHOUSE_DB=penn_demo) answers the same way on any day.
+    pinned_now: str = field(default_factory=lambda: os.getenv("PENN_NOW", ""))
+
 
 settings = Settings()

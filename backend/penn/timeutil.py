@@ -275,6 +275,14 @@ def mentions_time(text: str) -> bool:
     return any(m.group(0) not in ("may", "mar", "march") for m in TIME_HINT.finditer(t))
 
 
+def now_local() -> datetime:
+    """The current local time, or PENN_NOW when a demo pins the clock."""
+    from .config import settings
+    if settings.pinned_now:
+        return datetime.fromisoformat(settings.pinned_now).astimezone(LOCAL_TZ)
+    return datetime.now(LOCAL_TZ)
+
+
 def resolve_window(text: str, now: datetime | None = None) -> Window | None:
     """Resolve a time phrase to a local window. Returns None if nothing matched.
 
@@ -287,7 +295,7 @@ def resolve_window(text: str, now: datetime | None = None) -> Window | None:
     A month or week with no year is its next occurrence, or its last one when the question is in
     the past tense ("what happened in March").
     """
-    now = (now or datetime.now(LOCAL_TZ)).astimezone(LOCAL_TZ)
+    now = (now or now_local()).astimezone(LOCAL_TZ)
     t = text.lower()
     part = next((p for p in PARTS if p in t), None)
     if "tonight" in t:
