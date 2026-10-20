@@ -10,7 +10,7 @@ eval/results/
 logs/
 *.egg-info/
 
-# visitphilly pages saved by hand, and the snapshots made from them: not ours to publish
+# visitphilly pages saved by hand, and the snapshots made from them
 scripts/*.htm
 scripts/*.html
 scripts/*_files/
