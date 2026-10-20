@@ -147,8 +147,8 @@ export function Legend({ counts, bands, citedCount, loading, hoods, onHoods, hid
             </button>
           </div>
           {explain && hoods && (
-            <p className="legend-note">Outlines are the City&rsquo;s 159 neighborhoods (OpenDataPhilly). A neighborhood you ask
-              about is outlined in green.</p>
+            <p className="legend-note">Outlines are 159 Philadelphia neighborhoods by Robert Cheetham (OpenDataPhilly,
+              CC BY 4.0). A neighborhood you ask about is outlined in green.</p>
           )}
 
           {explain && (
@@ -170,7 +170,13 @@ export function Legend({ counts, bands, citedCount, loading, hoods, onHoods, hid
               <p className="legend-sub">Roads</p>
               <ul>
                 <li><Road fill={ROAD.highway} edge={ROAD.highwayEdge} width={7} /><span className="legend-label">Highway</span></li>
-                <li><Road fill={ROAD.street} edge="#E1E3E6" width={5} /><span className="legend-label">Street</span></li>
+                <li><Road fill={ROAD.street} edge={ROAD.streetEdge} width={5} /><span className="legend-label">Street</span></li>
+                <li>
+                  <svg className="swatch" width="28" height="14" viewBox="0 0 28 14" aria-hidden="true">
+                    <rect x="0" y="0" width="28" height="14" rx="3" fill={PARK.park} />
+                  </svg>
+                  <span className="legend-label">Park in the city</span>
+                </li>
               </ul>
               <p className="legend-note">A permit means the City allowed the work for these dates. It does not confirm the street is closed at this moment.</p>
             </div>

@@ -39,6 +39,8 @@ function byWhen(a: PennEvent, b: PennEvent): number {
 // the same boundaries the server uses when a question names a neighborhood.
 const HOODS_URL = "/neighborhoods.geojson";
 const HOOD_LAYERS = ["hood-line", "hood-focus", "hood-label"];
+// Everything past the city line, built from the neighborhoods by scripts/build_city_mask.py.
+const CITY_MASK_URL = "/city-mask.geojson";
 const SIGN = "#1E5B44";   // --sign in globals.css
 const PRESETS = [{ days: 1, label: "24 hours" }, { days: 7, label: "7 days" }, { days: 30, label: "30 days" }];
 // How long a window's city-wide records are reused before the map asks again: "the next 7 days"
@@ -369,12 +371,55 @@ export default function Page() {
       ["highway_minor", "highway_major_inner", "highway_major_casing"].forEach(id => paint(id, ROAD.street));
       const streetWidth = m.getLayer("highway_minor") && m.getPaintProperty("highway_minor", "line-width");
       if (streetWidth) ["highway_major_inner", "highway_major_casing"].forEach(id => m.getLayer(id) && m.setPaintProperty(id, "line-width", streetWidth));
+      // A white street on Positron's near-white ground shows only where buildings frame it; in a low-density
+      // neighborhood like Cedarbrook, with few buildings mapped, the streets vanish. A light grey edge under every
+      // street keeps the grid readable at every zoom.
+      const firstStreet = ["highway_minor", "highway_major_casing"].find(id => m.getLayer(id));
+      ["highway_minor", "highway_major_inner"].forEach(id => {
+        const spec = m.getStyle().layers.find(l => l.id === id) as maplibregl.LineLayerSpecification | undefined;
+        if (!spec) return;
+        m.addLayer({ ...spec, id: `${id}-edge`, paint: { "line-color": ROAD.streetEdge,
+          "line-width": ["interpolate", ["exponential", 1.55], ["zoom"], 11, 2.4, 13, 3.4, 20, 22] } }, firstStreet);
+      });
+      // Rail in a tunnel (the Center City Commuter Connection under Filbert and Market) is not on the street and
+      // drew a hatched line through the blocks closures need. Surface rail stays: no one drives across it. Positron
+      // already leaves out subway tunnels (its "transit" class).
+      ["railway", "railway_dashline", "railway_service", "railway_service_dashline"].forEach(id => {
+        const f = m.getLayer(id) && m.getFilter(id);
+        if (f) m.setFilter(id, ["all", f, ["!=", ["get", "brunnel"], "tunnel"]] as maplibregl.FilterSpecification);
+      });
+      // Parks, squares, fields and woods olive inside the city only. Positron draws parks first, right over its background; an
+      // olive copy of its woods goes there too (the original, drawn later, is hidden), then the city mask: the
+      // background color everywhere past the city line, over the olive and under water, roads and labels.
+      if (m.getLayer("park")) m.setPaintProperty("park", "fill-color", PARK.park);
+      const wood = m.getStyle().layers.find(l => l.id === "landcover_wood") as maplibregl.FillLayerSpecification | undefined;
+      const firstAbovePark = m.getLayer("water") ? "water" : undefined;
+      if (wood) {
+        m.addLayer({ ...wood, id: "wood-city", paint: { ...wood.paint, "fill-color": PARK.wood } }, firstAbovePark);
+        m.setLayoutProperty("landcover_wood", "visibility", "none");
+      }
+      // Green spaces Positron never draws, in the same olive as parks: squares and lawns are grass landcover
+      // (Washington Square is grass/park there, not in the park layer), and ballfields, playgrounds and running
+      // tracks are landuse.
+      const tiles = wood?.source ?? "openmaptiles";
+      m.addLayer({ id: "grass-city", type: "fill", source: tiles, "source-layer": "landcover",
+        filter: ["==", ["get", "class"], "grass"], paint: { "fill-color": PARK.park } }, firstAbovePark);
+      m.addLayer({ id: "fields-city", type: "fill", source: tiles, "source-layer": "landuse",
+        filter: ["in", ["get", "class"], ["literal", ["pitch", "playground", "track"]]], paint: { "fill-color": PARK.park } }, firstAbovePark);
+      m.addSource("city-mask", { type: "geojson", data: CITY_MASK_URL });
+      m.addLayer({ id: "city-mask", type: "fill", source: "city-mask",
+        paint: { "fill-color": (m.getLayer("background") && m.getPaintProperty("background", "background-color") as string) || "rgb(242,243,240)" } },
+        firstAbovePark);
 
-      // Neighborhoods under everything else of ours: a soft green band (no dashes, so it never reads as a permit),
-      // and the asked-about one as a solid sign-green line.
+      // Neighborhoods under everything else of ours: a soft slate band (no dashes, so it never reads as a permit),
+      // plainest when zoomed out, where neighborhoods are the useful frame. At street level it stays, narrower than
+      // the street it runs down, so the street still shows on either side. The asked-about one is a solid
+      // sign-green line at every zoom.
       m.addSource("hoods", { type: "geojson", data: HOODS_URL });
       add({ id: "hood-line", type: "line", source: "hoods",
-        paint: { "line-color": SIGN, "line-width": zoomWidth(4, 9), "line-opacity": 0.16, "line-blur": 1.5 } });
+        paint: { "line-color": HOOD.line, "line-blur": 1,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 11, 3, 14, 4.5, 17, 5],
+          "line-opacity": ["interpolate", ["linear"], ["zoom"], 11, 0.4, 13, 0.3, 15, 0.24] } });
       add({ id: "hood-focus", type: "line", source: "hoods", filter: ["==", ["get", "name"], ""],
         paint: { "line-color": SIGN, "line-width": zoomWidth(2.5, 4.5), "line-opacity": 0.9 } });
 
@@ -433,9 +478,9 @@ export default function Page() {
       // Sans), so areas are told apart from streets the way maps usually do it: spaced bold capitals, level, for a
       // neighborhood; regular title case along the line, in grey, for a street.
       add({ id: "hood-label", type: "symbol", source: "hoods", minzoom: 12,
-        layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Italic"], "text-size": zoomWidth(11, 14),
-          "text-max-width": 8, "text-letter-spacing": 0.04 },
-        paint: { "text-color": "#2F5E4C", "text-halo-color": "rgba(255,255,255,0.9)", "text-halo-width": 1.5 } });
+        layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Bold"], "text-transform": "uppercase",
+          "text-size": zoomWidth(10, 12.5), "text-max-width": 9, "text-letter-spacing": 0.16, "text-line-height": 1.3 },
+        paint: { "text-color": HOOD.label, "text-halo-color": "rgba(255,255,255,0.9)", "text-halo-width": 1.5 } });
 
       // Listings (visitphilly): flags over everything, street names included, so a flag on a closed street
       // stays visible and clickable. Under each flag's foot, a highlighter dot when cited and a ring when open.
