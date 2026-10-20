@@ -170,6 +170,12 @@ export default function Page() {
   const [hiddenCats, setHiddenCats] = useState<ReadonlySet<Category>>(new Set());
   const hiddenRef = useRef(hiddenCats); hiddenRef.current = hiddenCats;
   const showHoodsRef = useRef(showHoods); showHoodsRef.current = showHoods;
+  // The corner or address the latest question resolved to, marked on the map.
+  const [placePoint, setPlacePoint] = useState<[number, number] | null>(null);
+  const placePointRef = useRef(placePoint); placePointRef.current = placePoint;
+  // Landmarks the answer names when the question named no place (p3-10): pinned and labeled, framed by the map.
+  const [marks, setMarks] = useState<Mark[]>([]);
+  const marksRef = useRef(marks); marksRef.current = marks;
   // While an answer that cites records is open, everything it does not cite steps back. Hiding the
   // answer brings the whole map back.
   const focus = status === "done" && sheetOpen && citedIds.length ? citedIds : null;
@@ -408,7 +414,24 @@ export default function Page() {
         filter: ["all", isDot, minorDot] as maplibregl.FilterSpecification, paint: dot });
       add({ id: "points", type: "circle", source: "events",
         filter: ["all", isDot, ["!", ["in", ["get", "cat"], ["literal", ["listing", "ticketed"]]]], ["!", minorDot]] as maplibregl.FilterSpecification, paint: dot });
-      // Below the basemap's labels, so street names win where they collide.
+      // The corner or address asked about: a sign-green target over the permits, ringed in white so it
+      // reads on any line color. A neighborhood gets its outline (hood-focus) instead.
+      m.addSource("place", { type: "geojson", data: empty });
+      add({ id: "place-ring", type: "circle", source: "place",
+        paint: { "circle-color": "rgba(255,255,255,0.55)", "circle-radius": zoomWidth(10, 16),
+          "circle-stroke-color": SIGN, "circle-stroke-width": 3 } });
+      add({ id: "place-dot", type: "circle", source: "place",
+        paint: { "circle-color": SIGN, "circle-radius": zoomWidth(3.5, 5), "circle-stroke-color": "#fff", "circle-stroke-width": 1.5 } });
+      m.addSource("marks", { type: "geojson", data: empty });
+      m.addLayer({ id: "mark-dot", type: "circle", source: "marks",
+        paint: { "circle-color": SIGN, "circle-radius": zoomWidth(4, 6), "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
+      m.addLayer({ id: "mark-label", type: "symbol", source: "marks",
+        layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Bold"], "text-size": 12, "text-anchor": "top",
+          "text-offset": [0, 0.8], "text-allow-overlap": true, "text-ignore-placement": true },
+        paint: { "text-color": SIGN, "text-halo-color": "#fff", "text-halo-width": 1.6 } });
+      // Below the basemap's labels, so street names win where they collide. The glyph server has one family (Noto
+      // Sans), so areas are told apart from streets the way maps usually do it: spaced bold capitals, level, for a
+      // neighborhood; regular title case along the line, in grey, for a street.
       add({ id: "hood-label", type: "symbol", source: "hoods", minzoom: 12,
         layout: { "text-field": ["get", "name"], "text-font": ["Noto Sans Italic"], "text-size": zoomWidth(11, 14),
           "text-max-width": 8, "text-letter-spacing": 0.04 },
@@ -426,6 +449,8 @@ export default function Page() {
         paint: { "icon-opacity": flagOpacity } });
       showHoodsOn(m, showHoodsRef.current);
       focusOn(m, focusRef.current);
+      markPlace(m, placePointRef.current);
+      markLandmarks(m, marksRef.current);
       load();
     };
     m.on("style.load", init);
@@ -496,6 +521,9 @@ export default function Page() {
 
   useEffect(() => { if (map.current?.getLayer("full")) focusOn(map.current, focusRef.current); }, [focusKey]);
 
+  useEffect(() => { if (map.current?.getSource("place")) markPlace(map.current, placePoint); }, [placePoint]);
+  useEffect(() => { if (map.current?.getSource("marks")) markLandmarks(map.current, marks); }, [marks]);
+
   // Outline the neighborhood an answer is about, when the place is one ("Fairmount", "Logan Square").
   useEffect(() => {
     const m = map.current;
@@ -526,7 +554,7 @@ export default function Page() {
   }, [picking, closePanel]);
 
   // ---- asking ----
-  async function showCited(ids: string[], fitIfNoPlace: boolean) {
+  async function showCited(ids: string[], fitIfNoPlace: boolean, extra: maplibregl.LngLatBounds | null = null) {
     const m = map.current;
     const got = await Promise.all(ids.slice(0, MAX_CITED_ON_MAP).map(id =>
       known.current.get(id) ?? getJSON<PennEvent>(`/events/${encodeURIComponent(id)}`).catch(() => null)));
@@ -534,7 +562,8 @@ export default function Page() {
     evs.forEach(e => known.current.set(e.event_id, e));
     const features = toFeatures(evs).map(f => ({ ...f, properties: { ...f.properties, color: COLOR[f.properties!.cat as Category] } }));
     (m?.getSource("cited") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features });
-    const b = fitIfNoPlace ? boundsOf(features) : null;
+    let b = fitIfNoPlace ? boundsOf(features) : null;
+    if (fitIfNoPlace && extra) b = b ? b.extend(extra) : extra;   // the landmarks the answer names, too
     if (b) fly(b, 16.5);
   }
 
@@ -543,7 +572,7 @@ export default function Page() {
     if (!q) return;
     const seq = ++askSeq.current;
     const stale = () => seq !== askSeq.current;
-    setAsked(q); setStatus("locating"); setReply(null); setSheetOpen(true); setCitedIds([]); setPlace(null);
+    setAsked(q); setStatus("locating"); setReply(null); setSheetOpen(true); setCitedIds([]); setPlace(null); setPlacePoint(null); setMarks([]);
     (map.current?.getSource("cited") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features: [] });
 
     // The place resolves in milliseconds without the model: move the map while the answer is written.
@@ -559,7 +588,10 @@ export default function Page() {
     } else {
       locate(q).then(l => {
         if (stale()) return;
-        if (l.found && l.view) { flew = true; placeView = l.view; fly(l.view.bounds, 17, true); setPlace({ name: l.place, window: l.window }); }
+        if (l.found && l.view) {
+          flew = true; placeView = l.view; fly(l.view.bounds, 17, true); setPlace({ name: l.place, window: l.window });
+          setPlacePoint(l.view.point ?? null);
+        }
         setStatus(s => (s === "locating" ? "reading" : s));
       }).catch(() => { if (!stale()) setStatus(s => (s === "locating" ? "reading" : s)); });
     }
@@ -576,12 +608,22 @@ export default function Page() {
       if (r.place || r.window) setPlace(p => ({ name: r.place ?? p?.name ?? null, window: r.window ?? p?.window }));
       const view: View | null | undefined = r.view;
       if (!flew && view) { flew = true; fly(view.bounds, 17, true); }
+      if (!at && view?.point) setPlacePoint(view.point);   // a picked point already has its pin
       // Settle once the answer has its real height, so the place sits clear of the sheet.
       const settle = placeView ?? view;
       if (settle) requestAnimationFrame(() => requestAnimationFrame(() => { if (!stale()) fly(settle.bounds); }));
       const ids = r.answer ? Array.from(new Set([...citationOrder(r.answer), ...(r.cited ?? [])])) : r.cited ?? [];
       setCitedIds(ids);
-      if (ids.length) await showCited(ids, !flew);
+      // No place in the question: the landmarks the answer names are pinned, and the map frames them with
+      // the cited records (one landmark: centered; several: zoomed out to fit all).
+      const lms = !flew ? r.landmarks ?? [] : [];
+      setMarks(lms.map(l => ({ name: l.name, point: l.point })));
+      const lmBounds = lms.reduce<maplibregl.LngLatBounds | null>((acc, l) => {
+        const lb = new maplibregl.LngLatBounds(l.bounds[0], l.bounds[1]);
+        return acc ? acc.extend(lb) : lb;
+      }, null);
+      if (ids.length) await showCited(ids, !flew, lmBounds);
+      else if (lmBounds) fly(lmBounds, 16);
     } catch (err) {
       if (stale()) return;
       setStatus("error");
@@ -764,6 +806,18 @@ function focusOn(m: maplibregl.Map, cited: string[] | null) {
     opacity.forEach(p => m.setPaintProperty(id, p, o));
     if (color) m.setPaintProperty(id, color.prop, keep ? ["case", keep, color.value, OUT_OF_ANSWER.color] : color.value);
   });
+}
+
+type Mark = { name: string; point: [number, number] };
+
+function markLandmarks(m: maplibregl.Map, list: Mark[]) {
+  (m.getSource("marks") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection",
+    features: list.map(l => ({ type: "Feature" as const, geometry: { type: "Point" as const, coordinates: l.point }, properties: { name: l.name } })) });
+}
+
+function markPlace(m: maplibregl.Map, p: [number, number] | null) {
+  (m.getSource("place") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection",
+    features: p ? [{ type: "Feature", geometry: { type: "Point", coordinates: p }, properties: {} }] : [] });
 }
 
 const MAX_TIP_PLACES = 2;

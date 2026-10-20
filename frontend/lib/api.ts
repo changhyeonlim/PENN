@@ -8,8 +8,9 @@ export type PennEvent = {
   centroid_lat?: number; centroid_lon?: number;   // /map only: what the legend's "in view" counts by
 };
 
-/** Center and bounds of a resolved place, as /locate and /agent return them. */
-export type View = { center: [number, number]; bounds: [[number, number], [number, number]] };
+/** Center and bounds of a resolved place, as /locate and /agent return them; point is the exact
+ *  corner or address (absent for a neighborhood). */
+export type View = { center: [number, number]; bounds: [[number, number], [number, number]]; point?: [number, number] | null };
 
 export type Located = { found: boolean; place: string | null; view?: View; window?: string };
 
@@ -25,6 +26,7 @@ export type AgentReply = {
   place?: string | null; window?: string | null; window_kind?: "before_records" | "past" | "current" | "future" | null;
   start?: string; end?: string; view?: View | null; model?: string | null; tools?: string[]; cited?: string[];
   web?: { id: string; title: string; url: string; site: string }[];   // web pages the answer cites (p5-09)
+  landmarks?: { name: string; point: [number, number]; bounds: [[number, number], [number, number]] }[];   // p3-10
 };
 
 export async function getJSON<T>(path: string, init?: RequestInit): Promise<T> {
