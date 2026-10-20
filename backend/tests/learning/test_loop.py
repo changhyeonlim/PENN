@@ -252,3 +252,25 @@ def test_permit_line_is_added_to_full_answers_citing_permits():
     already = cite + " Permits list dates only, not daily hours or which days work happens."
     assert loop._add_permit_line(already, ["full"]) == already
     assert loop._add_permit_line("Closure [id:event_closures:x].", ["full"]) == "Closure [id:event_closures:x]."
+
+
+def test_answer_rules_come_with_the_first_result_of_their_kind(fake_tools):
+    client = FakeClient([
+        tool_call("search_events", SEARCH, "call_1"),
+        tool_call("search_events", SEARCH, "call_2"),
+        text("A storm water permit is in effect [id:lane_closures:2025-07887]."),
+    ])
+    run(client)
+    msgs = client.requests[-1]["messages"]
+    assert "ANSWER SHAPE" not in msgs[0]["content"], "shape rules ride with search results, not the system prompt"
+    first, second = [json.loads(m["content"]) for m in msgs if m.get("role") == "tool"]
+    assert first["how_to_answer"][0] == "HOW TO DESCRIBE A PERMIT"
+    assert any(line.startswith("ANSWER SHAPE: FULL") for line in first["how_to_answer"])
+    assert "how_to_answer" not in second, "each set of rules is sent once per turn"
+
+
+def test_no_rules_for_lookups_or_errors():
+    assert loop.rules_for("resolve_place", {"place_id": "p1"}) == []
+    assert loop.rules_for("search_events", {"error": "unknown place_id"}) == []
+    assert loop.rules_for("find_event", {"matches": ["A", "B"]}) == []
+    assert loop.rules_for("search_events", {"searched": {"answer_shape": "brief"}}) == ["permits", "brief"]

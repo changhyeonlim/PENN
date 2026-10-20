@@ -89,17 +89,7 @@ GROUNDING
 - For "what is around X" or "what is happening at X", list every relevant record the tools returned,
   including neighboring blocks. If truncated is true, say the list is partial.
 
-HOW TO DESCRIBE A PERMIT
-- A permit is "a permit in effect", never a fact about the street. Never write that a street
-  "is closed" or "is fully closed". Write "a permit listing a Full Closure is in effect".
-- occupancy is what the permit lists: Full Closure, Partial Closure, or Footway. Footway means the
-  sidewalk only: say it affects the sidewalk only, not a traffic lane.
-- Permits give start and end dates only, never daily hours or which days work happens. When a permit's
-  description itself states timing ("night-time", "overnight", "weekends", "second or third shift"),
-  quote those words and say they come from the permit's description, not confirmed hours.
-- open_ended true: give the start date, say no end date is listed, and say PENN cannot confirm
-  whether work is happening. Never call it ongoing.
-- claim_certainty "planned" is a city plan with no dates: say it is planned, not scheduled.
+RECORDS
 - Timed records (start_ts, end_ts) are announced closures; their times are already Philadelphia
   local time. 311 records are resident reports, not confirmed events.
 - If a record's organization names a race organizer, say the closure list came from the race
@@ -122,15 +112,48 @@ HISTORY
 - past_events_here in a search result is background for those questions only. When the question
   is about past years or a recurring event, call get_location_history before answering; otherwise
   ignore past_events_here and answer about the window asked.
-- For a future event with no notice yet, say PENN has no announcement for it, then give past years
-  as a pattern, not a promise.
-- Cite one record for each year you mention, copying each edition's ready cite string exactly.
-- Name the years PENN has records for; for "every year", say it cannot confirm other years.
 
 EVENTS (a question that names an event: "When is Rocky Run?", "Is the Marathon this weekend?")
 - Call find_event with the event's name only. No place is needed: never ask for a pin or a place for an
   event question, and never search the default 7 days for "when is X?". If the context lists
   events_named, call find_event for it first.
+
+WEB (search_web: a question PENN's records do not answer)
+- Call it when the question is open or city-wide (a kind of event, "when does X happen", "does it ever
+  have X"), or when the other tools found no record of what was asked. Never say "PENN has no record"
+  as the whole answer before calling it. Pass a short query of what and where ("East Passyunk food
+  festival", "food festivals October 2026"), never the user's whole message.
+
+HOW TO ANSWER
+- A tool result can end with how_to_answer: the rules for answering from that kind of result (describing
+  permits, the answer's shape, events, web pages, past years). Follow them. Each set comes once per turn
+  and still holds for later results of the same kind.
+"""
+
+# The rest of the prompt comes with the tool result it is about, the first time that kind of result comes
+# back in a turn (rules_for). A trip question never needs the FULL shape and a permit question never needs
+# the event or web rules, so the system prompt is about half as long; a rule next to the records it is
+# about is also nearer the answer than one 150 lines back.
+RULES = {
+    "permits": """HOW TO DESCRIBE A PERMIT
+- A permit is "a permit in effect", never a fact about the street. Never write that a street
+  "is closed" or "is fully closed". Write "a permit listing a Full Closure is in effect".
+- occupancy is what the permit lists: Full Closure, Partial Closure, or Footway. Footway means the
+  sidewalk only: say it affects the sidewalk only, not a traffic lane.
+- Permits give start and end dates only, never daily hours or which days work happens. When a permit's
+  description itself states timing ("night-time", "overnight", "weekends", "second or third shift"),
+  quote those words and say they come from the permit's description, not confirmed hours.
+- open_ended true: give the start date, say no end date is listed, and say PENN cannot confirm
+  whether work is happening. Never call it ongoing.
+- claim_certainty "planned" is a city plan with no dates: say it is planned, not scheduled.""",
+
+    "get_location_history": """PAST YEARS
+- For a future event with no notice yet, say PENN has no announcement for it, then give past years
+  as a pattern, not a promise.
+- Cite one record for each year you mention, copying each edition's ready cite string exactly.
+- Name the years PENN has records for; for "every year", say it cannot confirm other years.""",
+
+    "find_event": """EVENTS
 - An event at a place ("Was Broad St closed at Snyder Ave for the Broad Street Run?"): find_event's
   at_this_place says whether that place was on the route, from the closures that touch it. Answer from
   it, citing its edition; never decide from your own reading of a route's street limits.
@@ -149,13 +172,9 @@ EVENTS (a question that names an event: "When is Rocky Run?", "Is the Marathon t
   [id:web:...] with "according to <site>", copied exactly as the excerpt writes it; never add a
   date, time or street the excerpt does not state. A web result never overrides a City notice: when
   they differ, give both and say which is the City's.
-- penn_records null and no web results: say PENN has no record of the event and stop.
+- penn_records null and no web results: say PENN has no record of the event and stop.""",
 
-WEB (search_web: a question PENN's records do not answer)
-- Call it when the question is open or city-wide (a kind of event, "when does X happen", "does it ever
-  have X"), or when the other tools found no record of what was asked. Never say "PENN has no record"
-  as the whole answer before calling it. Pass a short query of what and where ("East Passyunk food
-  festival", "food festivals October 2026"), never the user's whole message.
+    "search_web": """WEB PAGES
 - Answer like a search engine: the direct answer first (which festivals, when, where), one line per
   thing found, each cited [id:web:...] with "according to <site>". Copy dates, times and streets
   exactly as the excerpt writes them; never add one it does not state. Note each result's year when
@@ -163,11 +182,11 @@ WEB (search_web: a question PENN's records do not answer)
 - If City records came first ("PENN has no City record of a food festival closure in East Passyunk"),
   say that in one line, then give what the web says. A web page never overrides a City record.
 - No web results either: then say PENN has no record of it, and found nothing on the web.
-- Do not tell the user how to search; answer.
+- Do not tell the user how to search; answer.""",
 
-ANSWER SHAPE: BRIEF (searched.answer_shape "brief": code chose it for an area or a trip)
+    "brief": """ANSWER SHAPE: BRIEF (code chose it for an area or a trip)
 People use PENN to decide whether to go somewhere and how to get there. Give the takeaways; the map
-shows every record.
+  shows every record.
 1. First line: whether getting there looks normal, and the exception with its day and time, cited.
    If getting_around.new has any item, the first line names its FIRST item (the biggest disruption);
    never say there are no closures when getting_around.new is not empty. Example: "Getting to
@@ -182,9 +201,9 @@ shows every record.
 - Days and dates come from each item's "when" text, copied as written ("Sun Oct 25"); never work
   out a weekday yourself.
 - If a closure group falls on an event's street and dates, say it is likely for that event, never certain.
-- Keep it short: no more than about 10 lines.
+- Keep it short: no more than about 10 lines.""",
 
-ANSWER SHAPE: FULL (searched.answer_shape "full": code chose it for permits, closures, one block or an address)
+    "full": """ANSWER SHAPE: FULL (code chose it for permits, closures, one block or an address)
 - First line: a direct answer. Give the number of matching permits when asked how many, or when an
   item has count and permits: that item is several permits with one title on one block, so say
   "3 PGW gas leak permits are in effect on the 1000 block of New Market St". Add up items when the
@@ -199,8 +218,33 @@ ANSWER SHAPE: FULL (searched.answer_shape "full": code chose it for permits, clo
 - An announced closure (start_ts, end_ts): title, every street with its limits as written ("Broad St
   from Erie Ave to the Navy Yard"), date, times, citation. It has no occupancy; never write
   "occupancy not listed".
-- For permits, end with: "Permits list dates only, not daily hours or which days work happens."
-"""
+- For permits, end with: "Permits list dates only, not daily hours or which days work happens.\"""",
+}
+
+
+def _lines(text: str) -> list[str]:
+    """A RULES section as JSON reads best: one string per heading, bullet or numbered item."""
+    out: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("  ") and out:
+            out[-1] += " " + line.strip()
+        elif line.strip():
+            out.append(line.strip())
+    return out
+
+
+def rules_for(name: str, result) -> list[str]:
+    """The RULES keys that go with this tool result: none for an error, a lookup or an ambiguous event."""
+    if not isinstance(result, dict) or "error" in result:
+        return []
+    if name == "search_events":
+        shape = (result.get("searched") or {}).get("answer_shape")
+        return ["permits", shape] if shape in RULES else ["permits"]
+    if name == "find_event":
+        return [] if "matches" in result else ["find_event"]
+    if name in ("search_web", "get_location_history"):
+        return [name]
+    return []
 
 MAX_STEPS = 8   # resolve_place and resolve_window take a step before the search
 # A "no record" answer while the web was not searched: sent back once to search_web, so an open question
@@ -341,6 +385,7 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
     tools_called, calls = [], []
     returned_ids, groups = set(), []
     shapes, folded = [], []          # answer shapes code chose per search; permit groups the results folded
+    rules_sent: set[str] = set()     # RULES already sent this turn
     retried = nudged = counted = False
     for _ in range(MAX_STEPS):
         t0 = time.monotonic()
@@ -376,6 +421,10 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
                 if isinstance(result, dict) and (shape := (result.get("searched") or {}).get("answer_shape")):
                     shapes.append(shape)
                 tools_called.append(tc.function.name)
+                new = [k for k in rules_for(tc.function.name, result) if k not in rules_sent]
+                rules_sent.update(new)
+                if new:
+                    result = result | {"how_to_answer": [line for k in new for line in _lines(RULES[k])]}
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
