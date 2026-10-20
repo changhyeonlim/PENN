@@ -160,6 +160,8 @@ def group_by_permit(features: list[dict]) -> list[NormalizedEvent]:
                 centroid_lon=lon,
                 h3_r9=point_cell(lon, lat),
                 h3_cells=cells,
+                seg_ids=sorted({int(float(f['properties']['seg_id'])) for f in feats
+                                if f['properties'].get('seg_id') not in (None, '')}),
                 organization="Philadelphia Streets Department (permit issuer)",
                 occupancy=p0.get("occupancytype") or "",
                 start_date=start,

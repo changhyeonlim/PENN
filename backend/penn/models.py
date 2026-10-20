@@ -23,6 +23,7 @@ class NormalizedEvent:
     centroid_lon: float
     h3_r9: int                       # centroid cell
     h3_cells: list[int] = field(default_factory=list)  # every cell the shape touches
+    seg_ids: list[int] = field(default_factory=list)   # street centerline segments (permits, matched closures)
     description: str = ""
     organization: str = ""
     occupancy: str = ""              # Full Closure, Partial Closure, Footway (lane closures only)

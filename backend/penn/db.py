@@ -12,7 +12,7 @@ from .models import NormalizedEvent
 EVENT_COLUMNS = [
     "event_id", "source", "source_record_id", "event_type", "title", "description",
     "organization", "occupancy", "source_url", "source_authority", "claim_certainty",
-    "geometry_wkt", "centroid_lat", "centroid_lon", "h3_r9", "h3_cells",
+    "geometry_wkt", "centroid_lat", "centroid_lon", "h3_r9", "h3_cells", "seg_ids",
     "start_date", "end_date", "start_ts", "end_ts", "open_ended", "status", "raw_status",
     "updated_at",
 ]

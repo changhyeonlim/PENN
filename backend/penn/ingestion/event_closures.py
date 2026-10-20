@@ -236,6 +236,7 @@ def to_event(row: dict, segments: list, notes: list[str], now: datetime) -> Norm
         centroid_lon=lon,
         h3_r9=point_cell(lon, lat),
         h3_cells=cells,
+        seg_ids=sorted({s.seg_id for s in segments}),
         start_date=row["start_date"],
         end_date=row["end_date"],
         start_ts=row.get("start_ts"),
