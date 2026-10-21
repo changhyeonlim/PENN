@@ -77,3 +77,58 @@ def test_web_cited_lines_state_only_what_the_page_says():
     assert web_facts("The festival is Oct 24 [id:web:0a1b2c3d].", pages).ok
     assert not web_facts("The festival is Oct 31 [id:web:0a1b2c3d].", pages).ok
     assert not web_facts("The festival is Oct 31 【id:web:0a1b2c3d】.", pages).ok     # either bracket style is checked
+
+
+def test_several_ids_in_one_bracket_are_each_cited():
+    from penn.agent.citations import split_multi
+    ids = {"ticketmaster:Z7r9jZ1AAvbp4", "ticketmaster:Z7r9jZ1AAvb4J"}
+    # Super's line on the Old City trip question, which showed as raw text instead of two chips
+    line = ("Girl from the North Country (Sun Oct 18 14:00 & 19:00) at Arden Theatre Co."
+            "【ids:ticketmaster:Z7r9jZ1AAvbp4, ticketmaster:Z7r9jZ1AAvb4J】")
+    c = check(line, ids)
+    assert c.ok and c.cited == ids
+    assert split_multi(line).endswith("[id:ticketmaster:Z7r9jZ1AAvbp4] [id:ticketmaster:Z7r9jZ1AAvb4J]")
+    for form in ("[id: ticketmaster:Z7r9jZ1AAvbp4; ticketmaster:Z7r9jZ1AAvb4J]",
+                 "【ticketmaster:Z7r9jZ1AAvbp4, id:ticketmaster:Z7r9jZ1AAvb4J】",
+                 "【ids:ticketmaster:Z7r9jZ1AAvbp4】"):
+        assert check(f"Shows {form}.", ids).ok, form
+    assert split_multi("Permit [id:lane_closures:1].") == "Permit [id:lane_closures:1]."     # nothing to split
+    bad = check("Shows 【ids:ticketmaster:Z7r9jZ1AAvbp4, ticketmaster:MADEUP】", ids)
+    assert not bad.ok and bad.unknown == {"ticketmaster:MADEUP"}                              # each ID is still checked
+
+
+def test_bare_ids_after_the_first_take_its_source():
+    from penn.agent.citations import split_multi
+    ids = {"lane_closures:2026-23904", "lane_closures:2026-21956", "lane_closures:2026-15496"}
+    # Super's br06 answer, with its narrow no-break spaces
+    line = "Three permits [ids:lane_closures:2026-23904, 2026-21956, 2026-15496]."
+    c = check(line, ids)
+    assert c.ok and c.cited == ids
+    assert split_multi("【ids:a_b:1, 2; c_d:3, 4】") == "[id:a_b:1] [id:a_b:2] [id:c_d:3] [id:c_d:4]"
+    assert not check("Permits [ids: 2026-23904, 2026-21956].", ids).ok    # the first ID still needs its source
+
+
+def test_drop_unread_keeps_readable_cites():
+    from penn.agent.citations import drop_unread
+    assert drop_unread("Permit [id:a_b:1], see 【past_events_here】.") == "Permit [id:a_b:1], see."
+    assert drop_unread("Shows 【[id:a_b:1] [id:a_b:2]】.") == "Shows 【[id:a_b:1] [id:a_b:2]】."
+    assert drop_unread("Nothing odd [id:a_b:1].") == "Nothing odd [id:a_b:1]."
+
+
+def test_unreadable_citation_brackets_fail_even_beside_good_ones():
+    ids = {"lane_closures:2026-19551", "ticketmaster:Z7r9jZ1AAvbp4"}
+    good = "Manholes [id:lane_closures:2026-19551]."
+    for junk in (" Show 【ticketmaster】.", " Show [ids: Z7r9jZ1AAvbp4].", " Show 【1】."):
+        c = check(good + junk, ids)
+        assert not c.ok and "cannot read" in c.reason, junk
+    assert check(good + " Show 【[id:ticketmaster:Z7r9jZ1AAvbp4]】.", ids).ok    # cites wrapped in 【】 still read
+    assert check(good + " See [the City page](https://www.phila.gov/).", ids).ok  # a markdown link is not a citation
+
+
+def test_id_prefix_in_any_case_is_a_citation():
+    from penn.agent import citations
+    ids = {"lane_closures:2026-15496"}
+    for form in ("[ID: lane_closures:2026-15496]", "[Id:lane_closures:2026-15496]", "【ID: lane_closures:2026-15496】"):
+        assert citations.check(f"A permit is in effect {form}.", ids).ok, form
+    assert not citations.check("A permit is in effect [1].", ids).ok        # a source prefix is still required
+    assert citations.WEB_CITE.findall("Per the site [ID: web:0123abcd].") == ["web:0123abcd"]

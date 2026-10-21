@@ -10,9 +10,20 @@ import re
 from dataclasses import dataclass, field
 
 # [id:<event_id>] as the prompt asks, or Nemotron's habits 【<event_id>】, 【{"id":"<event_id>"}】 and
-# 【{"event_id":"<event_id>"}】, with or without "id:". A "<word>:" prefix inside the brackets is
-# required, so made-up forms like [citation: ...] or [1] still fail the check.
-CITE = re.compile(r'[\[【]\s*(?:\{\s*"(?:event_)?id"\s*:\s*")?(?:id:\s*)?([a-z0-9_]+:[A-Za-z0-9_:\-\.]+)"?\s*\}?\s*[\]】]')
+# 【{"event_id":"<event_id>"}】, with or without "id:" in any case ("[ID: ...]" cost a right answer on the
+# eval's tr12). A "<source>:" prefix inside the brackets is required, so made-up forms like
+# [citation: ...] or [1] still fail the check. "ids:" counts as "id:".
+CITE = re.compile(r'[\[【]\s*(?:\{\s*"(?:event_)?id"\s*:\s*")?(?:[iI][dD][sS]?:\s*)?([a-z0-9_]+:[A-Za-z0-9_:\-\.]+)"?\s*\}?\s*[\]】]')
+# Several IDs in one bracket, 【ids:ticketmaster:A, ticketmaster:B】 or [id: a; b]: Super's habit when one line
+# names two records. split_multi rewrites it as one [id:...] each, so everything that reads CITE sees a form
+# it knows. The first ID needs its "<source>:" prefix; a bare one after it ("lane_closures:2026-1, 2026-2")
+# takes the source before it.
+_ONE = r"(?:[iI][dD]:\s*)?[a-z0-9_]+:[A-Za-z0-9_:\-\.]+"
+_NEXT = r"(?:[iI][dD]:\s*)?[A-Za-z0-9_][A-Za-z0-9_:\-\.]*"
+MULTI = re.compile(rf"[\[【]\s*(?:[iI][dD][sS]?\s*:\s*)?({_ONE}(?:\s*[,;]\s*{_NEXT})+)\s*[\]】]")
+# A bracket that looks like a citation but that CITE cannot read would reach the user as raw text
+# ("【ticketmaster】", "[ids: 2025-1]"), so it fails the check like an unknown ID.
+UNREAD = re.compile(r"【\s*[^\s】][^】]*】|\[\s*ids?\s*:[^\]]*\]", re.I)
 SOURCES = ("lane_closures:", "event_closures:", "philly_311:", "visitphilly:", "ticketmaster:", "web:")
 # A correct negative answer ("PENN has no record of a block party there") has nothing to cite even when
 # the tools returned other records for the area. Allowed uncited only if it states no specifics.
@@ -20,6 +31,29 @@ NO_RECORD = re.compile(r"\b(PENN has no record|PENN has no records|no record of|
 # Specifics = a block number or a date range; the place name and the question's own date are not.
 SPECIFICS = re.compile(r"\b\d{1,5}\s+block\b|\b(?:until|through)\s+\w"
                        r"|\bto\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d", re.I)
+
+
+def split_multi(text: str) -> str:
+    """'【ids:a:1, a:2】' -> '[id:a:1] [id:a:2]'. Text with no multi-ID bracket comes back unchanged."""
+    def one_each(m: re.Match) -> str:
+        out, source = [], ""
+        for p in re.split(r"\s*[,;]\s*", m.group(1)):
+            p = re.sub(r"^[iI][dD]:\s*", "", p)
+            if ":" in p:
+                source = p.split(":", 1)[0]
+            else:
+                p = f"{source}:{p}"
+            out.append(f"[id:{p}]")
+        return " ".join(out)
+    return MULTI.sub(one_each, text)
+
+
+def drop_unread(text: str) -> str:
+    """Cut the brackets UNREAD finds, for a rewrite that still has one: the rest of the answer can stand."""
+    def drop(m: re.Match) -> str:
+        return "" if UNREAD.fullmatch(CITE.sub("", m.group(0)).strip()) else m.group(0)
+    out = UNREAD.sub(drop, text)
+    return re.sub(r"[ \t]+(?=[.,;])", "", out) if out != text else text
 
 
 def _resolve(c: str, returned: set[str]) -> str:
@@ -82,10 +116,13 @@ class CitationCheck:
 def check(answer: str, returned_ids: set[str], allow_no_record: bool = False) -> CitationCheck:
     """allow_no_record: accept a plain uncited "PENN has no record" answer. The loop passes it only
     on the rewrite, so a lazy first "no record" is still pushed to cite what the tools found."""
+    answer = split_multi(answer)
     cited = {_resolve(c, returned_ids) for c in CITE.findall(answer)}
     unknown = cited - returned_ids
     if unknown:
         return CitationCheck(False, cited, unknown, f"cites IDs the tools did not return: {sorted(unknown)}")
+    if unread := UNREAD.search(CITE.sub("", answer)):
+        return CitationCheck(False, cited, set(), f"has a citation PENN cannot read: {unread.group(0)}")
     if returned_ids and not cited:
         if allow_no_record and NO_RECORD.search(answer) and not SPECIFICS.search(answer):
             return CitationCheck(True, cited, set(), "")      # a plain "no record" answer
@@ -103,7 +140,7 @@ _TIME = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s?m\b\.?", re.I)
 _STREET = re.compile(r"\b((?:[A-Z][a-z]+|\d+(?:st|nd|rd|th))(?:\s+[A-Z][a-z]+)*)\s+(St|Street|Ave|Avenue|Dr|Drive|Blvd|"
                      r"Boulevard|Rd|Road|Pkwy|Parkway|Way|Lane|Ln)\b\.?")
 _ABBR = {"st": "street", "ave": "avenue", "dr": "drive", "blvd": "boulevard", "rd": "road", "pkwy": "parkway", "ln": "lane"}
-WEB_CITE = re.compile(r"[\[【]\s*(?:id:)?\s*(web:[0-9a-f]{8})\s*[\]】]")   # 【id:web:...】 too, as CITE reads it
+WEB_CITE = re.compile(r"[\[【]\s*(?:[iI][dD]:)?\s*(web:[0-9a-f]{8})\s*[\]】]")   # 【id:web:...】 too, as CITE reads it
 
 
 def _month(word: str) -> str:
@@ -129,7 +166,7 @@ def _facts(line: str) -> list[str]:
 def web_facts(answer: str, pages: dict[str, dict]) -> CitationCheck:
     """Every date, time and street in a line citing only web pages must appear in one of those pages."""
     missing = []
-    for line in answer.splitlines():
+    for line in split_multi(answer).splitlines():
         ids = WEB_CITE.findall(line)
         if not ids or len(CITE.findall(line)) > len(ids):        # no web cite, or mixed with PENN records
             continue

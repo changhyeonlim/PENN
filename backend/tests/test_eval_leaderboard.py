@@ -19,7 +19,7 @@ def test_percentile_interpolates_like_numpy():
 
 def test_format_counts_strict_lenient_and_missed_cites():
     r = Result(id="a", draft_texts=[
-        "One [id:lane_closures:A], two 【lane_closures:B】, three [ID: lane_closures:C].",   # first draft: not strict
+        "One [id:lane_closures:A], two 【lane_closures:B】, three [ref lane_closures:C].",   # first draft: not strict
         "<think>[id:lane_closures:X]</think>Fixed [id:lane_closures:A] and [id:lane_closures:B].",
     ])
     f = leaderboard.format_stats([r])
