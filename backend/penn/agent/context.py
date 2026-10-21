@@ -518,3 +518,23 @@ SCHEMAS = [
         "parameters": {"type": "object", "required": ["place_id", "window_id"], "properties": {
             **_IDS, "since_year": {"type": "integer", "description": "Earliest year to include (default 2016)"}}}}},
 ]
+
+# The last step of a record answer when PENN_STRUCTURED=1 (penn.agent.render): the model says which records
+# answer the question, code writes their facts. Not in SCHEMAS, so the free-text loop never offers it.
+SUBMIT_ANSWER = {"type": "function", "function": {
+    "name": "submit_answer",
+    "description": "Finish the answer. List the event_ids that answer the question; code writes each record's "
+                   "title, blocks, dates, counts, caveats and citation from the tool results. Use only event_ids "
+                   "the tools returned this turn.",
+    "parameters": {"type": "object", "required": ["direct_answer", "records", "no_record"], "properties": {
+        "direct_answer": {"type": "string", "description": "One sentence answering the question (yes, no, or what "
+                          "kind of thing), with no titles, blocks, dates, counts or citations. Never say a street "
+                          "is closed."},
+        "records": {"type": "array", "description": "Every record that answers the question, on every street and "
+                    "block the search covered. Empty when none does.",
+                    "items": {"type": "object", "required": ["event_id", "why"], "properties": {
+                        "event_id": {"type": "string", "description": "An event_id copied from a tool result"},
+                        "why": {"type": "string", "description": "A few words on why it answers the question"}}}},
+        "no_record": {"type": "boolean", "description": "true when no record the tools returned answers it"},
+        "checked": {"type": "string", "description": "With no_record: the kind of record looked for, e.g. "
+                    "'a block party on Judson St'"}}}}}

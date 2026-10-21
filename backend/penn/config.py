@@ -53,6 +53,9 @@ class Settings:
     model_timeout_s: float = field(default_factory=lambda: float(os.getenv("PENN_MODEL_TIMEOUT", "60")))
     # Routing is paused: every chat turn uses Super. PENN_ROUTING=1 turns the Ultra rules back on.
     routing_enabled: bool = field(default_factory=lambda: os.getenv("PENN_ROUTING", "0") == "1")
+    # PENN_STRUCTURED=1: the model ends a record answer with submit_answer (which records answer the question)
+    # and penn.agent.render writes the text. Off, the model writes the whole answer and loop.py checks it.
+    structured: bool = field(default_factory=lambda: os.getenv("PENN_STRUCTURED", "0") == "1")
 
     ais_gatekeeper_key: str = field(default_factory=lambda: os.getenv("AIS_GATEKEEPER_KEY", ""))
     # Ticketmaster Discovery API consumer key (developer.ticketmaster.com). TICKETMASTER_API is the

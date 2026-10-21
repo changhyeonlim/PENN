@@ -94,6 +94,25 @@ def test_made_up_citation_gets_one_rewrite(fake_tools):
     ])
     a = run(client)
     assert a.cited == ["lane_closures:2025-07887"]
+    assert [c["kind"] for c in a.checks] == ["unknown_record"]       # the guard line says what was caught
+
+
+def test_a_clean_answer_has_nothing_sent_back(fake_tools):
+    client = FakeClient([
+        tool_call("search_events", SEARCH),
+        text("A storm water permit is in effect [id:lane_closures:2025-07887]."),
+    ])
+    assert run(client).checks == []
+
+
+def test_an_uncited_draft_is_named_as_uncited(fake_tools):
+    client = FakeClient([
+        tool_call("search_events", SEARCH),
+        text("A storm water permit is in effect on Judson St."),
+        text("A storm water permit is in effect [id:lane_closures:2025-07887]."),
+    ])
+    a = run(client)
+    assert a.checks == [{"kind": "uncited", "label": loop.SENT_BACK["uncited"]}]
 
 
 def test_gives_up_honestly_after_second_bad_answer(fake_tools):
@@ -104,6 +123,29 @@ def test_gives_up_honestly_after_second_bad_answer(fake_tools):
     ])
     a = run(client)
     assert a.text == loop.GIVE_UP and a.cited == []
+    assert [c["kind"] for c in a.checks] == ["unknown_record", "unknown_record"]
+
+
+def test_several_ids_in_one_bracket_come_back_one_each(fake_tools):
+    client = FakeClient([
+        tool_call("search_events", SEARCH),
+        text("Storm water permits are in effect 【ids:lane_closures:2025-07887, 2025-07887】."),
+    ])
+    a = run(client)
+    assert a.cited == ["lane_closures:2025-07887"]
+    assert "[id:lane_closures:2025-07887] [id:lane_closures:2025-07887]" in a.text and "【" not in a.text
+
+
+def test_unreadable_cite_gets_one_rewrite_then_is_dropped(fake_tools):
+    good = "A storm water permit is in effect [id:lane_closures:2025-07887]"
+    client = FakeClient([
+        tool_call("search_events", SEARCH),
+        text(f"{good}, see 【past_events_here】."),
+        text(f"{good}, see 【past_events_here】."),
+    ])
+    a = run(client)
+    assert "cannot read" in client.requests[-1]["messages"][-1]["content"]      # the first draft was sent back
+    assert a.cited == ["lane_closures:2025-07887"] and "【" not in a.text         # the rewrite stands without it
 
 
 def test_history_goes_in_without_old_citations(fake_tools):
@@ -274,3 +316,61 @@ def test_no_rules_for_lookups_or_errors():
     assert loop.rules_for("search_events", {"error": "unknown place_id"}) == []
     assert loop.rules_for("find_event", {"matches": ["A", "B"]}) == []
     assert loop.rules_for("search_events", {"searched": {"answer_shape": "brief"}}) == ["permits", "brief"]
+
+
+def test_records_seen_reads_singles_and_groups():
+    result = {"events": [
+        {"event_id": "lane_closures:A", "title": "Loading/Unloading", "description": "600 block of N American St"},
+        {"title": "PWD Excavation", "description": "500 block of Woodbrook Ln", "count": 2,
+         "permits": [{"event_id": "lane_closures:B", "open_ended": True}, {"event_id": "lane_closures:C"}]}]}
+    seen = loop.records_seen(result)
+    assert seen["lane_closures:A"] == {"title": "Loading/Unloading", "where": "600 block of N American St", "open_ended": False}
+    assert seen["lane_closures:B"]["open_ended"] and seen["lane_closures:C"]["title"] == "PWD Excavation"
+
+
+def test_uncited_no_record_is_shown_the_records_before_giving_up(fake_tools):
+    client = FakeClient([
+        tool_call("search_events", SEARCH),
+        text("PENN has no record of storm water work on Judson St."),
+        text("A Storm Water Installation permit listing a Full Closure is in effect [id:lane_closures:2025-07887]."),
+    ])
+    a = run(client, q="Any storm water permits on Judson St Saturday morning?")   # a permit question: no web nudge
+    recheck = client.requests[2]["messages"][-1]["content"]
+    assert "Storm Water Installation" in recheck and "[id:lane_closures:2025-07887]" in recheck
+    assert "check each record" in recheck and a.cited == ["lane_closures:2025-07887"]
+
+
+def test_open_ended_caveat_is_added_once():
+    records = {"lane_closures:A": {"title": "PWD", "where": "", "open_ended": True},
+               "lane_closures:B": {"title": "Valet", "where": "", "open_ended": False}}
+    ans = "A PWD permit is in effect since May 27, 2024, no end date listed [id:lane_closures:A]."
+    assert loop._add_open_line(ans, {"lane_closures:A"}, records, ["full"]).endswith(loop.OPEN_LINE)
+    assert loop._add_open_line(ans, {"lane_closures:B"}, records, ["full"]) == ans
+    hedged = ans + " PENN cannot confirm whether work is happening."
+    assert loop._add_open_line(hedged, {"lane_closures:A"}, records, ["full"]) == hedged
+    assert loop._add_open_line(ans, {"lane_closures:A"}, records, ["brief"]) == ans
+
+
+def test_closed_claims_only_count_unhedged_facts():
+    assert loop.closed_claims("Yes, Ludlow Street is closed on Saturday. Two permits list a Full Closure.", True, False)
+    assert not loop.closed_claims("This shows a permit is in effect, not that the street is closed.", True, False)
+    assert not loop.closed_claims("Broad St is closed from 7 AM, per the City notice.", False, False)   # an announcement
+    assert loop.closed_claims("Streets near 22nd St will be closed Friday through Sunday.", False, True)
+    assert not loop.closed_claims("Streets near 22nd St will be closed Friday through Sunday.", False, False)
+
+
+def test_closed_claim_gets_one_rewrite(fake_tools):
+    client = FakeClient([
+        tool_call("search_events", SEARCH),
+        text("Yes, Judson St is closed on Saturday [id:lane_closures:2025-07887]."),
+        text("A permit listing a Full Closure is in effect on Judson St [id:lane_closures:2025-07887]."),
+    ])
+    a = run(client)
+    assert "Rewrite without stating that a street is or will be closed" in client.requests[2]["messages"][-1]["content"]
+    assert a.text.startswith("A permit listing a Full Closure is in effect")
+
+
+def test_closed_claim_about_an_announcement_is_not_flagged():
+    brief = ("A City advisory: 3rd St (Market to Poplar) is closed 10 AM to 2:15 PM [id:event_closures:adv-1].\n"
+             "- Loading/Unloading, permit in effect Oct 17 only [id:lane_closures:A]")
+    assert not loop.closed_claims(brief, True, False)

@@ -28,10 +28,10 @@ from dataclasses import dataclass, field
 import json
 import re
 from penn.config import settings
-from .context import SCHEMAS, Context
+from .context import SCHEMAS, SUBMIT_ANSWER, Context
 from .router import Route
 import time
-from . import citations
+from . import citations, render
 
 SYSTEM = """You are PENN, a guide to street permits, street closures and events in the City of Philadelphia.
 You answer from PENN's records first, and from the web (search_web) when they do not answer.
@@ -272,6 +272,34 @@ class Answer:
     request_id: str = ""
     calls: list[dict] = field(default_factory=list)
     groups: list[list[str]] = field(default_factory=list)   # brief groups' member IDs, so a cited group lights up whole
+    checks: list[dict] = field(default_factory=list)        # drafts a check sent back: {"kind", "label"}, in order
+
+
+# What each check caught, in words the answer's guard line shows (api.py `guard`).
+SENT_BACK = {
+    "unknown_record": "cited a record PENN never retrieved",
+    "uncited": "stated facts without citing a record",
+    "unreadable_cite": "had a citation PENN could not read",
+    "web_fact": "stated a date, time or street its web page does not have",
+    "closed_claim": "said a street is closed when only a permit is on file",
+    "unsearched_no_record": "said \"no record\" before searching the web",
+    "uncounted": "did not say how many permits",
+}
+
+
+def _sent_back(kind: str) -> dict:
+    return {"kind": kind, "label": SENT_BACK[kind]}
+
+
+def _failed(chk: citations.CitationCheck) -> str:
+    """The SENT_BACK kind of a failed citation or web-fact check."""
+    if chk.unknown:
+        return "unknown_record"
+    if chk.reason.startswith("has a citation"):
+        return "unreadable_cite"
+    if chk.reason.startswith("web-cited"):
+        return "web_fact"
+    return "uncited"
 
 
 HISTORY_TURNS = 3
@@ -326,6 +354,86 @@ def _add_permit_line(text: str, shapes: list[str]) -> str:
     return f"{text.rstrip()}\n\n{PERMIT_LINE}"
 
 
+def records_seen(obj) -> dict[str, dict]:
+    """Every record in a tool result by event_id: its title, where it is, and whether it is open-ended. A
+    group's permits (context._for_model) each get the group's title."""
+    if isinstance(obj, list):
+        return {k: v for x in obj for k, v in records_seen(x).items()}
+    if not isinstance(obj, dict):
+        return {}
+    if isinstance(obj.get("permits"), list) and obj.get("title"):
+        return {p["event_id"]: {"title": obj["title"], "where": str(obj.get("description") or ""),
+                                "open_ended": bool(p.get("open_ended") or obj.get("open_ended"))}
+                for p in obj["permits"] if isinstance(p, dict) and isinstance(p.get("event_id"), str)}
+    if isinstance(obj.get("event_id"), str) and obj.get("title"):
+        return {obj["event_id"]: {"title": obj["title"], "where": str(obj.get("description") or ""),
+                                  "open_ended": bool(obj.get("open_ended"))}}
+    return {k: v for x in obj.values() for k, v in records_seen(x).items()}
+
+
+RECHECK_LIMIT = 30
+
+
+def _recheck(reason: str, records: dict[str, dict]) -> str:
+    """The rewrite for an answer that cited nothing while the tools returned records. Offered a plain "no
+    record" way out, the model took it with a record that answered the question in the results (a loading
+    zone on the next street over; a repaving plan under another title). So it is shown the records first."""
+    shown = list(records.items())[:RECHECK_LIMIT]
+    lines = "\n".join(f"- {r['title']}, {r['where'][:90]} [id:{i}]" for i, r in shown)
+    more = f"\n(and {len(records) - len(shown)} more)" if len(records) > len(shown) else ""
+    return (f"Citation check failed: {reason}. Before answering that PENN has no record, check each record the tools "
+            "returned against the question. A record answers it if it is that kind of thing anywhere in the searched "
+            "area: on a nearby street too, and under a title that uses other words for it. The records:\n"
+            f"{lines}{more}\nList every one that answers the question, cited as [id:<event_id>]. Only if none does, "
+            "say in one sentence that PENN has no record of it.")
+
+
+OPEN_LINE = "A permit with no end date listed may or may not be active: PENN cannot confirm whether work is happening."
+_CANNOT_CONFIRM = re.compile(r"\b(cannot|can ?not|can[’']?t|unable to) confirm\b|\bmay or may not\b", re.I)
+
+
+def _add_open_line(text: str, cited: set[str], records: dict[str, dict], shapes: list[str]) -> str:
+    """Open-ended permits read as ongoing work unless the answer says otherwise; added in code when a full
+    answer cites one and never says PENN cannot confirm it ("no end date listed, so it remains authorized")."""
+    if "full" not in shapes or _CANNOT_CONFIRM.search(text):
+        return text
+    if not any(records.get(c, {}).get("open_ended") for c in cited):
+        return text
+    return f"{text.rstrip()}\n\n{OPEN_LINE}"
+
+
+_IS_CLOSED = re.compile(r"\b(is|are) (now |still |fully |completely |partially )?closed\b", re.I)
+_WILL_BE_CLOSED = re.compile(r"\bwill (be |stay |remain )?(fully |completely |partially )?closed\b", re.I)
+_NEGATION = re.compile(r"\b(not|no|never|cannot|can[’']?t|whether|if)\b", re.I)
+
+
+def closed_claims(text: str, cites_permits: bool, estimated: bool) -> list[str]:
+    """Sentences that state a street is closed as a fact: "is closed" when the answer rests on permits (a
+    permit is in effect, the street may not be closed), "will be closed" when the event's date is only an
+    estimate. A negation earlier in the sentence ("not that the street is closed") does not count, nor does
+    a sentence whose own cites are all City announcements ("3rd St is closed 10 AM to 2:15 PM [id:event_closures:...]")."""
+    found = []
+    for pattern, applies in ((_IS_CLOSED, cites_permits), (_WILL_BE_CLOSED, estimated)):
+        if not applies:
+            continue
+        for m in pattern.finditer(text):
+            start = max(text.rfind(".", 0, m.start()), text.rfind("\n", 0, m.start())) + 1
+            ends = [i for i in (text.find(".", m.end()), text.find("\n", m.end())) if i >= 0]
+            sentence = text[start:min(ends) if ends else len(text)]
+            own = citations.CITE.findall(sentence)
+            if _NEGATION.search(text[start:m.start()]):
+                continue
+            if pattern is _IS_CLOSED and own and not any(c.startswith("lane_closures:") for c in own):
+                continue                             # an announced closure, said as the City said it
+            found.append(text[start:m.end()].strip())
+    return found
+
+
+HEDGE = ("Rewrite without stating that a street is or will be closed. A permit is \"a permit listing a Full Closure "
+         "is in effect\", never a fact about the street; an event with no City notice yet is \"likely to close "
+         "streets, as in past years, not confirmed\". Keep everything else the answer said, with its citations.")
+
+
 _NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine",
                  10: "ten", 11: "eleven", 12: "twelve"}
 
@@ -370,14 +478,18 @@ def chat_route(model: str | None = None) -> Route:
 
 
 def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = None, client=None,
-        model: str | None = None) -> Answer:
+        model: str | None = None, structured: bool | None = None) -> Answer:
     """Run one Ask PENN turn and return a cited answer. `ctx` holds the places and windows known so
     far and records which ones the answer searched; `history` is earlier (question, answer) pairs.
-    `model` overrides settings.model_chat for this turn (the eval compares models with it)."""
+    `model` overrides settings.model_chat for this turn (the eval compares models with it).
+    `structured` overrides settings.structured: record answers end with submit_answer, written by render.py."""
     client = client or OpenAI(base_url=settings.token_factory_base_url, api_key=settings.token_factory_api_key,
                               max_retries=1)    # the default 2 retries would let one hung call take 3 timeouts
     route = chat_route(model)
-    messages = [{"role": "system", "content": SYSTEM}]
+    sub = render.Structured(question, ctx.now, open_question=not PERMIT_QUESTION.search(question)) \
+        if (settings.structured if structured is None else structured) else None
+    rules, schemas = (RULES | render.RULES, SCHEMAS + [SUBMIT_ANSWER]) if sub else (RULES, SCHEMAS)
+    messages = [{"role": "system", "content": SYSTEM + render.SYSTEM if sub else SYSTEM}]
     for q, a in (history or [])[-HISTORY_TURNS:]:
         messages += [{"role": "user", "content": q}, {"role": "assistant", "content": _past(a)}]
     messages.append({"role": "user", "content": f"{question}\n\nContext: {ctx.describe()}"})
@@ -386,17 +498,20 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
     returned_ids, groups = set(), []
     shapes, folded = [], []          # answer shapes code chose per search; permit groups the results folded
     rules_sent: set[str] = set()     # RULES already sent this turn
-    retried = nudged = counted = False
+    records: dict[str, dict] = {}    # every record the tools returned: title, where, open-ended
+    estimated = False                # find_event gave only an estimated date, no City notice
+    retried = nudged = counted = hedged = False
+    sent_back: list[dict] = []       # what each check caught, for the answer's guard line
     for _ in range(MAX_STEPS):
         t0 = time.monotonic()
         try:
-            resp = client.chat.completions.create(model=route.model, messages=messages, temperature=0, tools=SCHEMAS,
+            resp = client.chat.completions.create(model=route.model, messages=messages, temperature=0, tools=schemas,
                                                   max_tokens=settings.model_max_tokens,
                                                   timeout=settings.model_timeout_s)
         except APITimeoutError:
             calls.append({"model": route.model, "reason": route.reason, "error": "timeout",
                           "latency_ms": int((time.monotonic() - t0) * 1000), "prompt_tokens": 0, "output_tokens": 0})
-            return Answer(TIMED_OUT, route, tools_called, [], "", calls, groups)
+            return Answer(TIMED_OUT, route, tools_called, [], "", calls, groups, sent_back)
         calls.append({
             "model": route.model,
             "reason": route.reason,
@@ -413,18 +528,32 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
                     args = json.loads(tc.function.arguments or "{}")
                 except ValueError:
                     args = None
-                result = ctx.call(tc.function.name, args) if isinstance(args, dict) \
-                    else {"error": "arguments were not valid JSON"}
+                if sub and tc.function.name == "submit_answer":
+                    result = sub.submit(args, returned_ids, ctx.web_searched)   # the answer, or what to fix
+                    if isinstance(result, render.Rendered):
+                        return Answer(result.text or GIVE_UP, route, tools_called + ["submit_answer"], result.cited,
+                                      "", calls, groups, sent_back)
+                    if "did not return" in str(result.get("error", "")):
+                        sent_back.append(_sent_back("unknown_record"))
+                else:
+                    result = ctx.call(tc.function.name, args) if isinstance(args, dict) \
+                        else {"error": "arguments were not valid JSON"}
+                    if sub:
+                        sub.see(result)
                 returned_ids |= citations.collect_ids(result)
                 groups += citations.collect_groups(result) + ctx.take_groups()
                 folded += permit_groups(result)
+                records |= records_seen(result)
                 if isinstance(result, dict) and (shape := (result.get("searched") or {}).get("answer_shape")):
                     shapes.append(shape)
+                if tc.function.name == "find_event" and isinstance(result, dict):
+                    nxt = (result.get("penn_records") or {}).get("next") or {}
+                    estimated = estimated or bool(nxt.get("estimates") and not nxt.get("announced"))
                 tools_called.append(tc.function.name)
                 new = [k for k in rules_for(tc.function.name, result) if k not in rules_sent]
                 rules_sent.update(new)
                 if new:
-                    result = result | {"how_to_answer": [line for k in new for line in _lines(RULES[k])]}
+                    result = result | {"how_to_answer": [line for k in new for line in _lines(rules[k])]}
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -439,10 +568,16 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
             retried = True
             messages += [{"role": "assistant", "content": content}, {"role": "user", "content": CUT_OFF}]
             continue
-        text = _drop_handle_cites(content, ctx)
+        if sub and sub.wants_submit(shapes, tools_called):   # a record list written as text: ask once for submit_answer
+            messages += [{"role": "assistant", "content": content}, {"role": "user", "content": render.SUBMIT_NUDGE}]
+            continue
+        text = _drop_handle_cites(citations.split_multi(content), ctx)   # one [id:...] per record from here on
+        if retried:
+            text = citations.drop_unread(text)   # an unreadable cite fails a first draft; a rewrite drops it instead
         if (not nudged and not ctx.web_searched and NO_RECORD.search(text) and not RECORDS_START.search(text)
                 and not PERMIT_QUESTION.search(question)):
             nudged = True
+            sent_back.append(_sent_back("unsearched_no_record"))
             messages += [{"role": "assistant", "content": content}, {"role": "user", "content": WEB_NUDGE}]
             continue
         chk = citations.check(text, returned_ids, allow_no_record=retried)   # plain "no record" only on the rewrite
@@ -451,20 +586,32 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
             chk = chk if web.ok else web
         if chk.ok and not counted and (missing := _uncounted(text, chk.cited, folded)):
             counted = True                           # asked once; a second miss is accepted, not failed
+            sent_back.append(_sent_back("uncounted"))
             say = "; ".join(f'{n} "{title}" permits' for n, _, title in missing)
             messages += [{"role": "assistant", "content": content},
                          {"role": "user", "content": f"Say how many permits each group is, in the first line ({say}), "
                                                      "and the total when there are several groups. Keep everything "
                                                      "else the answer said, every record and its citation."}]
             continue
+        if chk.ok and not hedged and closed_claims(
+                text, any(c.startswith("lane_closures:") for c in chk.cited), estimated):
+            hedged = True                            # asked once, like the count
+            sent_back.append(_sent_back("closed_claim"))
+            messages += [{"role": "assistant", "content": content}, {"role": "user", "content": HEDGE}]
+            continue
         if chk.ok:
-            text = _add_permit_line(_drop_permit_line(text, tools_called), shapes)
-            return Answer(text, route, tools_called, sorted(chk.cited), "", calls, groups)
+            text = _add_open_line(_drop_permit_line(text, tools_called), chk.cited, records, shapes)
+            text = _add_permit_line(text, shapes)
+            return Answer(text, route, tools_called, sorted(chk.cited), "", calls, groups, sent_back)
+        sent_back.append(_sent_back(_failed(chk)))
         if retried:
             break                                    # second bad answer: give up
         retried = True
         messages.append({"role": "assistant", "content": content})
+        if not chk.cited and records:
+            messages.append({"role": "user", "content": _recheck(chk.reason, records)})
+            continue
         messages.append({"role": "user",
                        "content": f"Citation check failed: {chk.reason}. Rewrite, citing each fact as [id:<event_id>] with square brackets, using only event_ids the tools returned (never a place_id or window_id). Include past_events_here or get_location_history records when they answer the question. If nothing the tools returned is relevant, answer in one sentence that PENN has no record of it."})
 
-    return Answer(GIVE_UP, route, tools_called, [], "", calls, groups)
+    return Answer(GIVE_UP, route, tools_called, [], "", calls, groups, sent_back)
