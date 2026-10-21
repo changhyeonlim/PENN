@@ -1,7 +1,21 @@
 import { Fragment, type ReactNode } from "react";
 
 // The citation forms the API accepts (see backend/penn/agent/citations.py).
-const CITE = /[\[【]\s*(?:\{\s*"(?:event_)?id"\s*:\s*")?(?:id:\s*)?([a-z0-9_]+:[A-Za-z0-9_:\-.]+)"?\s*\}?\s*[\]】]/g;
+const CITE = /[\[【]\s*(?:\{\s*"(?:event_)?id"\s*:\s*")?(?:[iI][dD][sS]?:\s*)?([a-z0-9_]+:[A-Za-z0-9_:\-.]+)"?\s*\}?\s*[\]】]/g;
+// Several IDs in one bracket, 【ids:a:1, a:2】: split into one citation each, as split_multi does. A bare ID
+// after the first ("lane_closures:2026-1, 2026-2") takes the source before it.
+const ONE = String.raw`(?:[iI][dD]:\s*)?[a-z0-9_]+:[A-Za-z0-9_:\-.]+`;
+const NEXT = String.raw`(?:[iI][dD]:\s*)?[A-Za-z0-9_][A-Za-z0-9_:\-.]*`;
+const MULTI = new RegExp(String.raw`[\[【]\s*(?:[iI][dD][sS]?\s*:\s*)?(${ONE}(?:\s*[,;]\s*${NEXT})+)\s*[\]】]`, "g");
+
+function oneEach(_: string, ids: string): string {
+  let source = "";
+  return ids.split(/\s*[,;]\s*/).map(raw => {
+    const id = raw.replace(/^id:\s*/i, "");
+    if (id.includes(":")) { source = id.split(":")[0]; return `[id:${id}]`; }
+    return `[id:${source}:${id}]`;
+  }).join(" ");
+}
 
 /** A web page an answer cites (p5-09): shown as a chip naming its site, never as a numbered record. */
 export type WebSource = { id: string; title: string; url: string; site: string };
@@ -17,6 +31,7 @@ export function citationOrder(text: string): string[] {
 
 function clean(text: string) {
   return text
+    .replace(MULTI, oneEach)                                                                       // 【ids:a, b】: one chip each
     .replace(/\b(?:lane_closures|event_closures|philly_311|visitphilly|ticketmaster):[A-Za-z0-9_:\-.]+\s*(?=[\[【])/g, "")  // an ID written out right before its own citation
     .replace(/\[id:\s*none[^\]]*\]/gi, "")                                                        // "[id:none ...]" is not a citation
     .replace(/【\s*((?:\[[^\]]+\]\s*)+)】/g, "$1")                                                  // 【[id:a] [id:b]】: keep the inner cites

@@ -905,18 +905,24 @@ export default function Page() {
           <p className="fine-row">
             <span className="fine-give" title={"Not an official City of Philadelphia source. Data is shown as published "
               + "and may be incomplete or out of date; check the linked record. Sources: City of Philadelphia street "
-              + "permits and event-closure notices, race organizers, visitphilly.com and Ticketmaster listings."}>
+              + "permits and event-closure notices, race organizers, visitphilly.com and Ticketmaster listings, and "
+              + "web pages found with Tavily search when PENN has no record."}>
               {PINNED_NOW && <strong className="fine-demo">Demo snapshot: data as of {demoStamp(PINNED_NOW)}. </strong>}
               Not an official City of Philadelphia source. Data may be incomplete or out of date; check the linked
               record. Sources: <a href="https://opendataphilly.org/datasets/street-lane-closures/"
               target="_blank" rel="noopener">City of Philadelphia</a> permits and closure notices, race
               organizers, <a href="https://www.visitphilly.com/" target="_blank" rel="noopener">visitphilly.com</a>,{" "}
-              <a href="https://www.ticketmaster.com/" target="_blank" rel="noopener">Ticketmaster</a>.
+              <a href="https://www.ticketmaster.com/" target="_blank" rel="noopener">Ticketmaster</a>, web pages
+              found with <a href="https://www.tavily.com/" target="_blank" rel="noopener">Tavily</a>.
             </span>
           </p>
           <p className="fine-row">
-            <span className="fine-give fine-privacy" title="PENN sets no cookies and shows no ads. Questions you ask are sent to NVIDIA Nemotron on Nebius to answer them.">
-              Privacy: no cookies, no ads; questions are sent to NVIDIA Nemotron on Nebius.
+            {/* Tavily may keep and use the search terms it receives (its terms 6.5, 9.2); penn/web/tavily.py
+                sends only a short query or an event name and year, never the question itself. */}
+            <span className="fine-give fine-privacy" title={"PENN sets no cookies and shows no ads. Questions you ask are sent "
+              + "to NVIDIA Nemotron on Nebius to answer them. When PENN has no record, a short web search (an event's name "
+              + "and year, or a few words on what you asked, never your question itself) is sent to Tavily, which may keep it."}>
+              Privacy: no cookies, no ads; questions go to NVIDIA Nemotron on Nebius, short web searches to Tavily.
             </span>
             {/* Map credits. OpenStreetMap asks for visible credit; the neighborhood outlines are CC BY 4.0,
                 which requires naming their author. */}
