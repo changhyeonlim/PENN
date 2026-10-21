@@ -132,6 +132,14 @@ button { cursor: pointer; }
 .sheet-msg p { margin: 0 0 6px; max-width: 72ch; }
 .sheet-error { margin: 4px 0; color: #7A0A1C; }
 .sheet-foot { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+/* the hallucination guard under an answer: green like the place sign, since it vouches for the answer */
+.guard { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0 0; padding: 7px 10px;
+  background: var(--wash); border: 1px solid var(--rule); border-left: 3px solid var(--sign); border-radius: 6px;
+  font-size: 13px; color: var(--muted); }
+.guard svg { flex: none; margin-top: 2px; color: var(--sign); }
+.guard p { margin: 0; }
+.guard b { color: var(--sign); }
+.guard .guard-caught { margin-top: 3px; color: var(--ink); }
 
 /* the place, as a street-name sign */
 .plate {

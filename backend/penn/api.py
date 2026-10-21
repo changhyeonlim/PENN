@@ -164,7 +164,7 @@ def _next_context(place, win, previous: dict | None) -> dict:
 @app.post("/agent")
 def agent(body: AskBody):
     from .agent.context import Context
-    from .agent.loop import ask
+    from .agent.loop import GIVE_UP, TIMED_OUT, ask
 
     ctx = Context(timeutil.now_local(), records_start())
     if body.lat is not None and body.lon is not None:
@@ -209,6 +209,11 @@ def agent(body: AskBody):
     cited = [i for i in cited if not i.startswith("web:")]
     # Landmarks the answer (then the question) names (p3-10): when the question named no place, the map
     # frames them and pins each one; with a place, the map keeps the place.
+    # The hallucination guard, as the answer shows it: how many records it cites (every one matched to this
+    # turn's tool results by citations.check), whether code resolved the place and dates, and each draft a
+    # check sent back. None when there is no answer to vouch for.
+    guard = None if a.text in (GIVE_UP, TIMED_OUT) else {
+        "cited": len(set(a.cited)), "resolved_in_code": bool(ctx.searches), "sent_back": a.checks}
     named = landmarks.find(f"{answer} {body.question}")
     marks = [{"name": l.name, "point": list(l.point), "bounds": [list(c) for c in l.bounds]} for l in named[:8]]
     return {"answer": answer, "notes": notes, "past_same_dates": past, "web": web, "landmarks": marks,
@@ -216,6 +221,6 @@ def agent(body: AskBody):
             "window_kind": win.kind if win else None,
             "start": win.window.start.isoformat() if win else None, "end": win.window.end.isoformat() if win else None,
             "view": _view(place.loc) if place else None, "model": a.route.model,
-            "route_reason": a.route.reason, "tools": a.tools_called, "cited": cited, "calls": a.calls,
+            "route_reason": a.route.reason, "tools": a.tools_called, "cited": cited, "calls": a.calls, "guard": guard,
             "asked_back": not ctx.searches,          # nothing searched: PENN asked or chatted; offer a pin
             "context": _next_context(place, win, body.context)}

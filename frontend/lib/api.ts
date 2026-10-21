@@ -27,7 +27,12 @@ export type AgentReply = {
   start?: string; end?: string; view?: View | null; model?: string | null; tools?: string[]; cited?: string[];
   web?: { id: string; title: string; url: string; site: string }[];   // web pages the answer cites (p5-09)
   landmarks?: { name: string; point: [number, number]; bounds: [[number, number], [number, number]] }[];   // p3-10
+  guard?: Guard | null;          // what the checks vouch for; null when there is no answer
 };
+
+/** The hallucination guard behind an answer: records cited (each matched to this turn's tool results),
+ * whether code resolved the place and dates, and every draft a check sent back before the answer. */
+export type Guard = { cited: number; resolved_in_code: boolean; sent_back: { kind: string; label: string }[] };
 
 export async function getJSON<T>(path: string, init?: RequestInit): Promise<T> {
   // fetch rejects with a bare "Failed to fetch" when nothing answers; say which server is missing.

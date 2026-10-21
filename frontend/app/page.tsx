@@ -3,6 +3,7 @@
 import maplibregl from "maplibre-gl";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AnswerText, citationOrder } from "@/components/AnswerText";
+import { GuardLine } from "@/components/GuardLine";
 import { Legend } from "@/components/Legend";
 import { PermitPanel } from "@/components/PermitPanel";
 import {
@@ -849,6 +850,7 @@ export default function Page() {
                     <>
                       {kindNote && <p className="kind-note">{kindNote}</p>}
                       <AnswerText text={reply.answer} titles={titles} selected={selected?.event_id ?? null} onCite={onCite} web={reply.web} />
+                      {reply.guard && <GuardLine guard={reply.guard} />}
                       {order.length > 0 && <p className="sheet-foot">Numbers open the permit. Highlighted streets on the map are
                         the ones cited; other records turn grey until you hide the answer.</p>}
                       {reply.asked_back && !pin && (
