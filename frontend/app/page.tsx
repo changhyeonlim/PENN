@@ -1,6 +1,6 @@
 "use client";
 
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AnswerText, citationOrder } from "@/components/AnswerText";
 import { GuardLine } from "@/components/GuardLine";
@@ -11,6 +11,10 @@ import {
   strengthBand, streetCase, tidy, todayStatus, wktToGeometry,
   type AgentReply, type AskContext, type AskTurn, type Category, type Extent, type PennEvent, type View,
 } from "@/lib/api";
+
+// MapLibre 6 is ESM-only and cannot find its worker inside a bundle: this exact `new URL(...)` form is what
+// Next.js (Turbopack and webpack) recognizes and emits as a hashed asset.
+maplibregl.setWorkerUrl(new URL("maplibre-gl/dist/maplibre-gl-worker.mjs", import.meta.url).toString());
 
 // OpenFreeMap Positron: a quiet vector basemap with street names and no house numbers or shop labels.
 const STYLE = "https://tiles.openfreemap.org/styles/positron";
@@ -87,11 +91,13 @@ const REASON_COLOR = ["match", ["get", "cat"], "event", COLOR.event, "blockparty
 const OUT_OF_ANSWER = { color: "#9AA3AE", opacity: 0.5, flag: 0.3 };
 type Expr = maplibregl.ExpressionSpecification;
 // The city layers an answer greys: the paint properties that fade, each one's own opacity, and its own color.
-const FOCUS: { id: string; opacity: string[]; base: Expr; color?: { prop: string; value: string | Expr }; casing?: boolean }[] = [
+type PaintProp = Parameters<maplibregl.Map["setPaintProperty"]>[1];   // MapLibre 6 types paint names
+type Focus = { id: string; opacity: PaintProp[]; base: Expr; color?: { prop: PaintProp; value: string | Expr }; casing?: boolean };
+const FOCUS: Focus[] = [
   ...["parking", "sidewalk", "lane", "full"]
-    .map(id => ({ id, opacity: ["line-opacity"], base: todayOpacity, color: { prop: "line-color", value: REASON_COLOR } })),
+    .map((id): Focus => ({ id, opacity: ["line-opacity"], base: todayOpacity, color: { prop: "line-color", value: REASON_COLOR } })),
   { id: "full-casing", opacity: ["line-opacity"], base: todayOpacity, casing: true },
-  ...["points", "points-minor"].map(id => ({ id, opacity: ["circle-opacity", "circle-stroke-opacity"], base: todayOpacity,
+  ...["points", "points-minor"].map((id): Focus => ({ id, opacity: ["circle-opacity", "circle-stroke-opacity"], base: todayOpacity,
     color: { prop: "circle-color", value: REASON_COLOR } })),
   { id: "listings", opacity: ["icon-opacity"], base: flagOpacity },
 ];
@@ -951,14 +957,14 @@ function showHoodsOn(m: maplibregl.Map, on: boolean) {
 
 /** Fade every record not in cited; null restores each layer's own opacity. */
 function focusOn(m: maplibregl.Map, cited: string[] | null) {
-  const keep = cited?.length ? ["in", ["get", "event_id"], ["literal", cited]] : null;
+  const keep = cited?.length ? ["in", ["get", "event_id"], ["literal", cited]] as Expr : null;
   FOCUS.forEach(({ id, opacity, base, color, casing }) => {
     if (!m.getLayer(id)) return;
     // A white casing under a grey line would read as a road, so it goes; flags can't turn grey, so they recede.
     const out = casing ? 0 : id === "listings" ? OUT_OF_ANSWER.flag : OUT_OF_ANSWER.opacity;
     const o = (keep ? ["case", keep, base, out] : base) as Expr;
     opacity.forEach(p => m.setPaintProperty(id, p, o));
-    if (color) m.setPaintProperty(id, color.prop, keep ? ["case", keep, color.value, OUT_OF_ANSWER.color] : color.value);
+    if (color) m.setPaintProperty(id, color.prop, keep ? ["case", keep, color.value, OUT_OF_ANSWER.color] as Expr : color.value);
   });
 }
 
