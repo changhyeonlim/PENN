@@ -201,22 +201,45 @@ export function when(e: PennEvent): { range: string; note?: string } {
 /** Demo mode: a fixed "now" (NEXT_PUBLIC_PENN_NOW, ISO 8601), matching the API's PENN_NOW, so a frozen
  *  snapshot (jobs/freeze_demo.py) looks the same whenever the demo is recorded. */
 export const PINNED_NOW = process.env.NEXT_PUBLIC_PENN_NOW || "";
-export function appNow(): Date {
+/** The real "now" (or the pinned demo time): what "Updated today" and the preset windows count from. */
+export function realNow(): Date {
   return PINNED_NOW ? new Date(PINNED_NOW) : new Date();
 }
+
+// Replay: the time slider moves the map's clock, and everything that asks "is this in effect now, coming up,
+// or over" follows it: records fade in as their day nears, show at full strength while in effect, and drop
+// off once over. The clock is a span, one step of the slider (a day): a 7:30 to 10:30 AM closure is in effect
+// on its day, not only at the instant the step starts. null when the map is live.
+let replayClock: number | null = null;
+let replayStep = 0;
+export function setReplayClock(at: number | null, stepMs = 0) { replayClock = at; replayStep = at === null ? 0 : stepMs; }
+export function appNow(): Date {
+  return replayClock !== null ? new Date(replayClock) : realNow();
+}
+/** The end of what the map shows: the replay step's end, or now itself when live. */
+export function appUntil(): Date {
+  return replayClock !== null ? new Date(replayClock + replayStep) : appNow();
+}
+
+/** /busiest: each day's listings, ticketed shows, event street closures and block parties (backend api.py). */
+export type BusyDay = { day: string; listings: number; ticketed: number; closures: number; notices: number;
+  block_parties: number; total: number };
+export type Busiest = { days: BusyDay[]; busiest: string | null };
 
 function todayISO(now = appNow()) {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
-/** Whether the permit is in effect today: drawn at full strength on the map, faded otherwise. */
-export function activeToday(e: PennEvent, now = appNow()): boolean {
+/** Whether the permit is in effect today (live), or at any time in the replay's step from `now` to `until`:
+ *  drawn at full strength on the map, faded otherwise. */
+export function activeToday(e: PennEvent, now = appNow(), until = appUntil()): boolean {
+  const last = until > now ? new Date(until.getTime() - 1) : now;   // the step's last moment, inside it
   // A start time with no end (a show, a game) happens on its start day: in effect all of that day.
-  if (e.start_ts && !e.end_ts) return localISO(e.start_ts) === todayISO(now);
-  if (e.start_ts) return new Date(e.start_ts) <= now && now <= new Date(e.end_ts!);
+  if (e.start_ts && !e.end_ts) { const d = localISO(e.start_ts); return todayISO(now) <= d && d <= todayISO(last); }
+  if (e.start_ts) return new Date(e.start_ts) <= last && now <= new Date(e.end_ts!);
   if (e.start_date) {
-    const t = todayISO(now);
-    return e.start_date.slice(0, 10) <= t && (e.open_ended || !e.end_date || t <= e.end_date.slice(0, 10));
+    return e.start_date.slice(0, 10) <= todayISO(last)
+      && (e.open_ended || !e.end_date || todayISO(now) <= e.end_date.slice(0, 10));
   }
   return false;
 }
@@ -237,8 +260,8 @@ export function isOver(e: PennEvent, now = appNow()): boolean {
 }
 
 /** Days from today to the permit: 0 in effect today, days until it starts, or days since it ended. */
-export function daysAway(e: PennEvent, now = appNow()): number {
-  if (activeToday(e, now)) return 0;
+export function daysAway(e: PennEvent, now = appNow(), until = appUntil()): number {
+  if (activeToday(e, now, until)) return 0;
   if (e.end_ts && localISO(e.end_ts) === todayISO(now) && new Date(e.end_ts) < now) return 0;   // over, earlier today
   const start = e.start_ts ? localISO(e.start_ts) : e.start_date;
   const end = e.end_ts ? localISO(e.end_ts) : e.end_date;
@@ -249,11 +272,11 @@ export function daysAway(e: PennEvent, now = appNow()): number {
 
 const plural = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
 
-export function todayStatus(e: PennEvent, now = appNow()): string {
-  if (e.start_ts && !e.end_ts && activeToday(e, now)) {
+export function todayStatus(e: PennEvent, now = appNow(), until = appUntil()): string {
+  if (e.start_ts && !e.end_ts && activeToday(e, now, until)) {
     return new Date(e.start_ts) > now ? `Today at ${clock(e.start_ts)}` : `Today; started at ${clock(e.start_ts)}`;
   }
-  if (activeToday(e, now)) return "In effect today";
+  if (activeToday(e, now, until)) return "In effect today";
   if (e.end_ts && localISO(e.end_ts) === todayISO(now) && new Date(e.end_ts) < now) return `Ended today at ${clock(e.end_ts)}`;
   const start = e.start_ts ? localISO(e.start_ts) : e.start_date;
   const end = e.end_ts ? localISO(e.end_ts) : e.end_date;

@@ -6,10 +6,11 @@ import { AnswerText, citationOrder } from "@/components/AnswerText";
 import { GuardLine } from "@/components/GuardLine";
 import { Legend } from "@/components/Legend";
 import { PermitPanel } from "@/components/PermitPanel";
+import { ReplayBar } from "@/components/ReplayBar";
 import {
-  activeToday, appNow, askAgent, category, extent, HOOD, isMinor, isOver, MINOR_ZOOM, PARK, isListing, COLOR, daysAway, flagDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, ROAD, shortWhen, STRENGTH,
+  activeToday, appNow, askAgent, category, extent, HOOD, isMinor, isOver, MINOR_ZOOM, PARK, isListing, COLOR, daysAway, flagDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, realNow, ROAD, setReplayClock, shortWhen, STRENGTH,
   strengthBand, streetCase, tidy, todayStatus, wktToGeometry,
-  type AgentReply, type AskContext, type AskTurn, type Category, type Extent, type PennEvent, type View,
+  type AgentReply, type AskContext, type AskTurn, type Busiest, type Category, type Extent, type PennEvent, type View,
 } from "@/lib/api";
 
 // MapLibre 6 is ESM-only and cannot find its worker inside a bundle: this exact `new URL(...)` form is what
@@ -102,11 +103,60 @@ const FOCUS: Focus[] = [
   { id: "listings", opacity: ["icon-opacity"], base: flagOpacity },
 ];
 
-/** The map's own window. Questions resolve their own dates on the server and never change it. */
+/** A preset window: from now, so many days ahead. */
 function range(days: number): { start: string; end: string } {
-  const now = appNow();
+  const now = realNow();
   return { start: now.toISOString(), end: new Date(now.getTime() + days * 864e5).toISOString() };
 }
+
+// Replay: a month of the city's records on a time slider, opening on its busiest day (/busiest). October 2026 is
+// the month the demo snapshot covers; NEXT_PUBLIC_PENN_REPLAY_MONTH picks another.
+const REPLAY_MONTH = process.env.NEXT_PUBLIC_PENN_REPLAY_MONTH || "2026-10";
+const REPLAY_AHEAD_DAYS = 7;   // records up to a week ahead of the slider fade in, as in the "7 days" view
+// One step of the slider: a day. 12 or 8 hours also work (the step must divide a day); the map then shows what
+// is in effect at any time in that step.
+const REPLAY_STEP_HOURS = 24;
+const REPLAY_STEP = REPLAY_STEP_HOURS * 3600e3;
+const REPLAY_TICK_MS = 700;    // play: one step on the map every this long
+const BUSY_CATS: ReadonlySet<Category> = new Set(["event", "blockparty", "listing", "ticketed"]);
+
+/** Midnight in Philadelphia on a YYYY-MM-DD, as epoch ms (the offset differs in winter). */
+function phillyMidnight(day: string): number {
+  const utc = Date.parse(`${day}T00:00:00Z`);
+  const name = new Date(utc + 12 * 3600e3).toLocaleString("en-US", { timeZone: "America/New_York", timeZoneName: "shortOffset" });
+  return utc - Number(/GMT([+-]\d+)/.exec(name)?.[1] ?? -5) * 3600e3;
+}
+
+function replaySpan(): { start: number; end: number; startDay: string; endDay: string } {
+  const [y, m] = REPLAY_MONTH.split("-").map(Number);
+  const startDay = `${y}-${String(m).padStart(2, "0")}-01`;
+  const endDay = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+  return { start: phillyMidnight(startDay), end: phillyMidnight(endDay), startDay, endDay };
+}
+
+/** Listings, shows, event closures and block parties in effect at any time in the step starting at `at`. */
+function busyDuring(events: PennEvent[], at: number): number {
+  const from = new Date(at), until = new Date(at + REPLAY_STEP);
+  return events.filter(e => BUSY_CATS.has(category(e)) && activeToday(e, from, until)).length;
+}
+
+/** The step of a day with the most of them in effect (the first, if tied), where the replay opens. With day
+ *  steps it is the day itself. */
+function peakStep(events: PennEvent[], day: string): number {
+  const midnight = phillyMidnight(day);
+  let best = midnight, most = -1;
+  for (let at = midnight; at < midnight + 24 * 3600e3; at += REPLAY_STEP) {
+    const n = busyDuring(events, at);
+    if (n > most) { most = n; best = at; }
+  }
+  return best;
+}
+
+// The dates the last answer covered ("Sunday Oct 25", "March 2025"), resolved on the server. The map can show
+// exactly those, from a chip beside the presets, so what the answer cites is on the map; the presets switch back.
+type Span = { start: string; end: string; label: string };
+type MapWindow = number | "answer" | "replay";
+const spanKey = (w: number | Span) => (typeof w === "number" ? `${w}` : `${w.start}|${w.end}`);
 
 // The header's "last loaded" stamps: which ingest_runs sources feed each kind of record on the map.
 const FRESH_GROUPS: { label: string; sources: string[] }[] = [
@@ -151,9 +201,17 @@ function groupSeries(events: PennEvent[], series: Map<string, PennEvent[]>, lead
   }
 }
 
+// Shapes parsed once per record: the replay redraws the city at every step of its slider.
+const SHAPES = new Map<string, GeoJSON.Geometry | null>();
+function shapeOf(e: PennEvent): GeoJSON.Geometry | null {
+  const key = `${e.event_id}|${e.geometry_wkt.length}`;
+  if (!SHAPES.has(key)) SHAPES.set(key, wktToGeometry(e.geometry_wkt));
+  return SHAPES.get(key)!;
+}
+
 function toFeatures(events: PennEvent[]): GeoJSON.Feature[] {
   return events.flatMap(e => {
-    const g = wktToGeometry(e.geometry_wkt);
+    const g = shapeOf(e);
     return g ? [{ type: "Feature" as const, geometry: g, properties: { event_id: e.event_id, cat: category(e), ext: extent(e), days: daysAway(e) } }] : [];
   });
 }
@@ -175,6 +233,7 @@ const isNarrow = () => typeof window !== "undefined" && window.matchMedia("(max-
 const hasRail = () => typeof window !== "undefined" && window.matchMedia("(min-width: 900px)").matches;
 const RAIL_W = 400;     // --rail-w
 const TOPBAR_H = 50;    // --topbar-h
+const REPLAY_H = 120;   // --replay-h: the replay bar under the top card, and its gap
 const KEY_W = 224;      // .legend width
 
 export default function Page() {
@@ -187,7 +246,11 @@ export default function Page() {
   const askSeq = useRef(0);
   const loadSeq = useRef(0);
 
-  const [win, setWin] = useState(7);
+  const [win, setWin] = useState<MapWindow>(7);
+  const [answerSpan, setAnswerSpan] = useState<Span | null>(null);
+  const [busyDays, setBusyDays] = useState<Busiest | null>(null);           // the replay month's days, by how busy
+  const [replayAt, setReplayAt] = useState<number | null>(null);    // the slider's time, ms
+  const [playing, setPlaying] = useState(false);
   const [events, setEvents] = useState<PennEvent[]>([]);
   const [zoomedOut, setZoomedOut] = useState(false);   // below MINOR_ZOOM: the minor kinds are not drawn
   const [turn, setTurn] = useState(0);   // how many times the ask box's example has rolled
@@ -253,6 +316,18 @@ export default function Page() {
 
   // Handlers registered once on the map read the latest state through refs.
   const winRef = useRef(win); winRef.current = win;
+  const answerSpanRef = useRef(answerSpan); answerSpanRef.current = answerSpan;
+  const replayAtRef = useRef(replayAt); replayAtRef.current = replayAt;
+  const busyRef = useRef(busyDays); busyRef.current = busyDays;
+  const busyReq = useRef<Promise<Busiest | null> | null>(null);   // /busiest, asked once when the replay opens
+  // Showing an answer's dates: the server already kept what is active then, so a past window's records
+  // (all over by today) stay drawn.
+  const exactSpan = useRef(false);
+  // Replaying: the map's clock is the slider's (setReplayClock), and a record shows from a week before it
+  // starts until it is over.
+  const replaying = useRef(false);
+  const onMap = useCallback((e: PennEvent) => (replaying.current ? !isOver(e) && daysAway(e) <= REPLAY_AHEAD_DAYS
+    : exactSpan.current || !isOver(e)), []);
   const pickingRef = useRef(picking); pickingRef.current = picking;
   const panelOpenRef = useRef(panelOpen); panelOpenRef.current = panelOpen;
   const sheetUpRef = useRef(false); sheetUpRef.current = status !== "idle";
@@ -263,7 +338,7 @@ export default function Page() {
     if (hasRail()) {
       // The answer is a column on the left and the key stands in the bottom right, so the place goes between.
       const panel = panelOpenRef.current ? 380 : 0;
-      return { top: 12 + TOPBAR_H + 24, bottom: 24,
+      return { top: 12 + TOPBAR_H + 24 + (winRef.current === "replay" ? REPLAY_H : 0), bottom: 24,
         left: expectSheet || sheetUpRef.current ? 12 + RAIL_W + 32 : 48,
         right: panel ? panel + 40 : 12 + KEY_W + 36 };
     }
@@ -272,7 +347,8 @@ export default function Page() {
     const grown = expectSheet ? (narrow ? 0.48 * window.innerHeight : Math.min(0.46 * window.innerHeight, 460)) : 0;
     const dock = Math.max(dockRef.current?.getBoundingClientRect().height ?? 0, grown);
     const panel = panelOpenRef.current && !narrow ? 380 : 0;
-    return { top: narrow ? 64 : 100, left: narrow ? 20 : 48, right: panel + (narrow ? 20 : 64), bottom: dock + 20 };
+    const replay = winRef.current === "replay" ? REPLAY_H : 0;
+    return { top: (narrow ? 64 : 100) + replay, left: narrow ? 20 : 48, right: panel + (narrow ? 20 : 64), bottom: dock + 20 };
   }, []);
 
   const fly = useCallback((b: maplibregl.LngLatBoundsLike, maxZoom = 17, expectSheet = false) => {
@@ -282,7 +358,7 @@ export default function Page() {
   // The whole city's records for each time window, fetched once (about 2,600 records, 300 KB gzipped)
   // and kept for CITY_TTL_MS. Panning and zooming never go back to the server, so nothing pops in at the
   // edges; a window's request is shared while it is in flight.
-  const cityCache = useRef(new Map<number, { at: number; req: Promise<CityLayer> }>());
+  const cityCache = useRef(new Map<string, { at: number; req: Promise<CityLayer> }>());
   const cityEvents = useRef<PennEvent[]>([]);
   // Matched pairs, both ways: a Ticketmaster event's visitphilly pick, and a pick's Ticketmaster dates.
   const pickOf = useRef(new Map<string, string>());
@@ -301,7 +377,8 @@ export default function Page() {
 
   /** What the map draws: switched-off categories left out, and a visitphilly pick that Ticketmaster also lists
    *  folded into the Ticketmaster flag (unless ticketed events are switched off, when the pick shows alone). */
-  const drawn = useCallback(() => cityEvents.current.filter(e => !hiddenRef.current.has(category(e)) && !folded(e) && !isOver(e)), [folded]);
+  const drawn = useCallback(() => cityEvents.current.filter(e => !hiddenRef.current.has(category(e)) && !folded(e)
+    && onMap(e)), [folded, onMap]);
 
   /** The other listings of the same event, for the panel and the hover card. */
   const partnersOf = useCallback((e: PennEvent): PennEvent[] => {
@@ -315,13 +392,14 @@ export default function Page() {
     (map.current?.getSource("events") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features: toFeatures(shown) });
   }, [drawn]);
 
-  const fetchCity = useCallback((days: number): Promise<CityLayer> => {
-    const hit = cityCache.current.get(days);
+  const fetchCity = useCallback((w: number | Span): Promise<CityLayer> => {
+    const key = spanKey(w);
+    const hit = cityCache.current.get(key);
     if (hit && Date.now() - hit.at < CITY_TTL_MS) return hit.req;
-    const { start, end } = range(days);
+    const { start, end } = typeof w === "number" ? range(w) : w;
     const req = getJSON<CityLayer>(`/map?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
-    cityCache.current.set(days, { at: Date.now(), req });
-    req.catch(() => cityCache.current.delete(days));
+    cityCache.current.set(key, { at: Date.now(), req });
+    req.catch(() => cityCache.current.delete(key));
     return req;
   }, []);
 
@@ -334,19 +412,30 @@ export default function Page() {
     setZoomedOut(out);
     // A pick folded into its Ticketmaster flag, or a show's later dates, are not counted again; switched-off
     // rows keep their counts. Zoomed out, the key counts only what is drawn: no minor lines.
-    setEvents(cityEvents.current.filter(e => e.centroid_lon != null && e.centroid_lat != null && !folded(e) && !isOver(e)
-      && !(out && isMinor(e)) && b.contains([e.centroid_lon, e.centroid_lat])));
-  }, [folded]);
+    setEvents(cityEvents.current.filter(e => e.centroid_lon != null && e.centroid_lat != null && !folded(e)
+      && onMap(e) && !(out && isMinor(e)) && b.contains([e.centroid_lon, e.centroid_lat])));
+  }, [folded, onMap]);
 
   const load = useCallback(() => {
     const m = map.current;
     if (!m || !m.getSource("events")) return;
     const seq = ++loadSeq.current;
-    const days = winRef.current;
+    const replay = winRef.current === "replay" ? replaySpan() : null;
+    const span: Span | null = replay
+      ? { start: new Date(replay.start).toISOString(), end: new Date(replay.end).toISOString(), label: REPLAY_MONTH }
+      : winRef.current === "answer" ? answerSpanRef.current : null;
+    const w = span ?? (typeof winRef.current === "number" ? winRef.current : 7);
     setMapLoading(true);
-    fetchCity(days)
+    // The replay opens on the busiest day, so it waits for the day counts as well as the records.
+    (replay ? Promise.all([fetchCity(w), busyReq.current]).then(([layer]) => layer) : fetchCity(w))
       .then(({ events, truncated, same_as, covered }) => {
         if (seq !== loadSeq.current) return;
+        exactSpan.current = span !== null;
+        replaying.current = replay !== null;
+        // The replay opens on the busiest day (its busiest step), once its records are here to count.
+        const at = replay ? replayAtRef.current ?? peakStep(events, busyRef.current?.busiest ?? replay.startDay) : null;
+        setReplayClock(at, REPLAY_STEP);
+        if (replay && replayAtRef.current === null) setReplayAt(at);
         events.forEach(e => known.current.set(e.event_id, e));
         cityEvents.current = events;
         pickOf.current = new Map((same_as ?? []).map(([pick, sale]) => [sale, pick]));
@@ -358,7 +447,7 @@ export default function Page() {
         drawCity();
         countInView();
         // Warm the other windows so switching between them is instant.
-        PRESETS.forEach(p => { if (p.days !== days) fetchCity(p.days).catch(() => {}); });
+        PRESETS.forEach(p => { if (p.days !== w) fetchCity(p.days).catch(() => {}); });
       })
       .catch(err => { if (seq === loadSeq.current) setMapError(`The map could not load permits: ${err.message}. Check that the PENN API is running.`); })
       .finally(() => { if (seq === loadSeq.current) setMapLoading(false); });
@@ -609,7 +698,42 @@ export default function Page() {
     return () => { clearTimeout(t); m.remove(); map.current = null; };   // StrictMode mounts twice in development
   }, [load, countInView, select, closePanel]);
 
-  useEffect(() => { load(); }, [win, load]);
+  useEffect(() => { load(); }, [win, answerSpan, load]);
+
+  // The slider moved: the map's clock follows, a show's next date leads its run again, and the city redraws.
+  useEffect(() => {
+    if (win !== "replay" || replayAt === null || !replaying.current) return;
+    setReplayClock(replayAt, REPLAY_STEP);
+    groupSeries(cityEvents.current, seriesOf.current, leads.current);
+    drawCity();
+    countInView();
+  }, [win, replayAt, drawCity, countInView]);
+
+  // Play: a step at a time to the month's end. Leaving the replay stops it and gives the map its own clock back.
+  useEffect(() => {
+    if (!playing || win !== "replay") return;
+    const { end } = replaySpan();
+    const t = setInterval(() => setReplayAt(at => {
+      const next = (at ?? end) + REPLAY_STEP;
+      if (next >= end) { setPlaying(false); return end - REPLAY_STEP; }
+      return next;
+    }), REPLAY_TICK_MS);
+    return () => clearInterval(t);
+  }, [playing, win]);
+  useEffect(() => {
+    if (win === "replay") return;
+    setPlaying(false);
+    if (replaying.current) { replaying.current = false; setReplayClock(null); }
+  }, [win]);
+
+  /** Open the replay: the month's busy days first (for the bars and the opening day), then its records. */
+  const startReplay = useCallback(() => {
+    const { startDay, endDay } = replaySpan();
+    busyReq.current ??= getJSON<Busiest>(`/busiest?start=${startDay}&end=${endDay}`)
+      .then(b => { setBusyDays(b); busyRef.current = b; return b; })
+      .catch(() => { busyReq.current = null; return null; });   // the bars are missing; the slider still works
+    setWin("replay");
+  }, []);
 
   useEffect(() => {
     getJSON<{ source: string; last_ok: string }[]>("/freshness")
@@ -714,6 +838,11 @@ export default function Page() {
       setOnTopic(true);
       if (r.outside) return;
       if (r.place || r.window) setPlace(p => ({ name: r.place ?? p?.name ?? null, window: r.window ?? p?.window }));
+      // The map switches to the answer's dates, unless they are the default next 7 days the presets already show.
+      if (r.start && r.end && r.window && !r.window.startsWith("the next 7 days")) {
+        setAnswerSpan({ start: r.start, end: r.end, label: r.window });
+        setWin("answer");
+      }
       const view: View | null | undefined = r.view;
       if (!flew && view) { flew = true; fly(view.bounds, 17, true); }
       if (!at && view?.point) setPlacePoint(view.point);   // a picked point already has its pin
@@ -773,6 +902,8 @@ export default function Page() {
   function forget() {
     turns.current = []; convo.current = null; pickFor.current = null;
     setOnTopic(false);
+    setAnswerSpan(null);
+    setWin(w => (w === "answer" ? 7 : w));
   }
 
   const onCite = (id: string) => {
@@ -796,7 +927,7 @@ export default function Page() {
     : reply?.window_kind === "past" ? "Past dates: this is what the records show was permitted." : "";
 
   return (
-    <main className={`app${panelOpen ? " panel-open" : ""}${picking ? " picking" : ""}`}>
+    <main className={`app${panelOpen ? " panel-open" : ""}${picking ? " picking" : ""}${win === "replay" ? " replaying" : ""}`}>
       <div className="map" ref={mapEl} role="region" aria-label="Map of Philadelphia street permits" />
 
       <header className="topbar">
@@ -804,15 +935,40 @@ export default function Page() {
           <span className="wordmark">PENN</span>
           <span className="tagline">Philadelphia Events and Neighborhood Navigator</span>
         </div>
-        <div className="segmented" role="radiogroup" aria-label="Map shows permits active in the next">
-          <span className="seg-label" aria-hidden="true">Map shows the next</span>
-          {PRESETS.map(p => (
-            <button key={p.days} type="button" role="radio" aria-checked={win === p.days}
-              onClick={() => setWin(p.days)}>{p.label}</button>
+        <div className="segmented" role="radiogroup" aria-label="Time on the map">
+          {/* Read as one line: "Next 24 hours | 7 days | 30 days | Replay | <the answer's dates>". */}
+          {PRESETS.map((p, i) => (
+            <button key={p.days} type="button" role="radio" className="seg-window" aria-checked={win === p.days}
+              aria-label={`Next ${p.label}`} onClick={() => setWin(p.days)}>
+              <span className="seg-long">{i === 0 ? `Next ${p.label}` : p.label}</span><span className="seg-short" aria-hidden="true">{p.days === 1 ? "24h" : `${p.days}d`}</span>
+            </button>
           ))}
+          <button type="button" role="radio" className="seg-replay" aria-checked={win === "replay"} aria-label="Replay"
+            title="Move the map through the month, opening on its busiest day" onClick={startReplay}>
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6.5" r="4.6" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M6 4v2.6l1.7 1.1M4.6 1h2.8" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
+            <span className="seg-long">Replay</span>
+          </button>
+          {answerSpan && (
+            <button type="button" role="radio" className="seg-date" aria-checked={win === "answer"}
+              title="The dates of the last answer" onClick={() => setWin("answer")}>
+              <span>{answerSpan.label}</span>
+            </button>
+          )}
         </div>
         <FreshLine loaded={loaded} />
       </header>
+
+      {win === "replay" && (() => {
+        const { start, end } = replaySpan();
+        // Until the month's records are in, the bar stands on the busiest day, waiting.
+        const at = replayAt ?? (busyDays?.busiest ? phillyMidnight(busyDays.busiest) : start);
+        return (
+          <ReplayBar start={start} end={end} step={REPLAY_STEP} days={busyDays?.days ?? []} busiest={busyDays?.busiest ?? null}
+            at={at} loading={replayAt === null} onAt={setReplayAt} playing={playing} onPlay={setPlaying}
+            inEffect={busyDuring(cityEvents.current, at)}
+            onBusiest={() => { setPlaying(false); if (busyDays?.busiest) setReplayAt(peakStep(cityEvents.current, busyDays.busiest)); }} />
+        );
+      })()}
 
       {mapError && <div className="map-error" role="alert">{mapError}</div>}
       {picking && <div className="pick-hint" role="status">Click the map where you mean. Esc cancels.</div>}
@@ -1035,7 +1191,7 @@ function ListingTip({ e, partners, dates }: { e: PennEvent; partners: PennEvent[
 /** "Updated yesterday 10:08 AM": the stalest of the three kinds' latest loads, so it never overstates how fresh
  *  the map is. Each kind's own stamp ("permits today 7:30 AM · ...") is in the hover title. */
 function FreshLine({ loaded }: { loaded: Record<string, string> }) {
-  const now = appNow();
+  const now = realNow();
   const lasts = FRESH_GROUPS.flatMap(g => {
     const last = g.sources.map(s => loaded[s]).filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b)).pop();
     return last ? [{ label: g.label, last }] : [];

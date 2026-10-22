@@ -16,6 +16,7 @@
   --bar-h: calc(64px + var(--fine-rows) * var(--fine-h));
   --panel-w: 380px;
   --topbar-h: 50px;
+  --replay-h: 0px;          /* the replay bar's room under the top card while replaying (REPLAY_H in page.tsx) */
   --rail-w: 400px;          /* the answer's left column on desktop */
   --lift: 0 1px 2px rgba(27, 36, 51, .12), 0 6px 20px rgba(27, 36, 51, .10);
 }
@@ -51,11 +52,85 @@ button { cursor: pointer; }
   text-decoration: underline dotted #B8BEC7; text-underline-offset: 3px; }
 /* Below a wide screen the tagline gives its room to the map. */
 @media (max-width: 1439px) { .tagline { display: none; } }
-.segmented { display: flex; align-items: center; gap: 2px; background: var(--wash); border-radius: 7px; padding: 3px; }
-.seg-label { font-size: 13px; color: var(--muted); padding: 0 6px 0 5px; }
-.segmented button { border: 0; background: none; border-radius: 5px; padding: 3px 10px; font-size: 14px; color: var(--muted); }
+/* The time on the map, read as one line: "Next 24 hours  7 days  30 days | Replay | <the answer's dates>".
+   The window in use is underlined in ink; Replay becomes an ink plate, the time-of-day counterpart of the green
+   place plate; the answer's dates are underlined in the highlighter yellow its citations use. */
+.segmented { display: flex; align-items: center; gap: 2px; }
+.segmented button { border: 0; background: none; border-radius: 5px; padding: 5px 8px; font-size: 14px; color: var(--muted);
+  white-space: nowrap; }
 .segmented button:hover { color: var(--ink); }
-.segmented button[aria-checked="true"] { background: var(--surface); color: var(--ink); font-weight: 700; box-shadow: 0 1px 2px rgba(27, 36, 51, .18); }
+.segmented button[aria-checked="true"] { color: var(--ink); font-weight: 600; }
+.seg-window[aria-checked="true"] { box-shadow: inset 0 -2.5px 0 var(--ink); border-radius: 0; }
+.segmented .seg-replay, .segmented .seg-date { display: inline-flex; align-items: center; gap: 6px; margin-left: 13px; position: relative; overflow: visible; }
+.segmented .seg-replay::before, .segmented .seg-date::before {
+  content: ""; position: absolute; left: -8px; top: 6px; bottom: 6px; width: 1px; background: var(--rule); }
+.segmented .seg-replay[aria-checked="true"] { background: var(--ink); color: #fff;
+  box-shadow: inset 0 0 0 2px var(--ink), inset 0 0 0 3px rgba(255, 255, 255, .55); }
+.segmented .seg-date { max-width: 190px; color: var(--ink); box-shadow: inset 0 -3px 0 var(--hl); border-radius: 0; }
+.segmented .seg-date > span { overflow: hidden; text-overflow: ellipsis; }
+.segmented .seg-date[aria-checked="true"] { background: var(--hl); box-shadow: none; border-radius: 4px; }
+.segmented svg { flex: none; }
+.seg-short { display: none; }
+
+/* Replay: a time slider under the top card. The month's days are the track, each bar as tall as the day is busy
+   (ink behind the needle, grey ahead, the busiest in the event purple), and the handle is a needle through them.
+   Bars, needle and week dates share one coordinate: the needle's travel, inset by half its width. */
+.app.replaying { --replay-h: 120px; }
+.replay {
+  --needle-half: 7px;
+  position: absolute; z-index: 3; top: calc(12px + var(--topbar-h) + 8px); left: 12px;
+  width: min(660px, calc(100vw - 84px)); padding: 10px 14px 8px;
+  background: var(--surface); border-radius: 10px; box-shadow: var(--lift);
+}
+.replay-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.replay-play { flex: none; width: 30px; height: 30px; border-radius: 50%; border: 1.5px solid var(--ink); display: grid; place-items: center;
+  background: var(--surface); color: var(--ink); }
+.replay-play:hover { background: var(--ink); color: #fff; }
+/* The date on a plate, the time-of-day counterpart of the green place plate. */
+.replay-time {
+  font: 600 19px/1 var(--display); letter-spacing: .02em; color: #fff; background: var(--ink); white-space: nowrap;
+  padding: 5px 10px 4px; border-radius: 5px; font-variant-numeric: tabular-nums;
+  box-shadow: inset 0 0 0 2px var(--ink), inset 0 0 0 3.5px rgba(255, 255, 255, .85);
+}
+.replay-time.pending { background: var(--wash); color: var(--muted); box-shadow: inset 0 0 0 1.5px var(--rule); }
+.replay-play:disabled, .replay-track input[type="range"]:disabled { opacity: .45; cursor: default; }
+.replay-play:disabled:hover { background: var(--surface); color: var(--ink); }
+.replay-count { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.replay-count b { color: var(--ink); font-weight: 700; }
+.replay-busiest { margin-left: auto; font-size: 13px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.replay-busiest::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--event); flex: none; }
+.replay-busiest.is-here { color: var(--event); font-weight: 600; }
+.replay-track { position: relative; height: 40px; margin-top: 10px; }
+.replay-track::after {   /* the baseline the days stand on */
+  content: ""; position: absolute; left: 0; right: 0; bottom: 5px; height: 1px; background: var(--rule); }
+.replay-bars { position: absolute; left: var(--needle-half); right: var(--needle-half); bottom: 6px; width: calc(100% - 2 * var(--needle-half));
+  height: 30px; overflow: visible; }
+.replay-bars rect { fill: #C9CED6; }
+.replay-bars rect.past { fill: var(--ink); opacity: .5; }
+.replay-bars rect.top { fill: var(--event); opacity: .8; }
+.replay-bars rect.now { fill: var(--ink); }
+.replay-track input[type="range"] {
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; background: transparent; cursor: ew-resize;
+  -webkit-appearance: none; appearance: none;
+}
+.replay-track input[type="range"]:focus-visible { outline: 2px solid rgba(27, 36, 51, .4); outline-offset: 3px; border-radius: 4px; }
+.replay-track input[type="range"]::-webkit-slider-runnable-track { height: 100%; background: transparent; }
+.replay-track input[type="range"]::-moz-range-track { height: 100%; background: transparent; }
+/* The needle: a hairline through the bars with a knob on the baseline. */
+.replay-track input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: calc(2 * var(--needle-half)); height: 40px; border: 0; background:
+    radial-gradient(circle at 50% calc(100% - 6px), var(--ink) 5px, #fff 5.5px, #fff 6.5px, transparent 7px),
+    linear-gradient(90deg, #fff 1px, var(--ink) 1px, var(--ink) 3px, #fff 3px) 50% 0 / 4px calc(100% - 10px) no-repeat;
+}
+.replay-track input[type="range"]::-moz-range-thumb {
+  width: calc(2 * var(--needle-half)); height: 40px; border: 0; border-radius: 0; background:
+    radial-gradient(circle at 50% calc(100% - 6px), var(--ink) 5px, #fff 5.5px, #fff 6.5px, transparent 7px),
+    linear-gradient(90deg, #fff 1px, var(--ink) 1px, var(--ink) 3px, #fff 3px) 50% 0 / 4px calc(100% - 10px) no-repeat;
+}
+.replay-weeks { position: relative; height: 16px; margin: 2px var(--needle-half) 0; font-size: 11px; color: var(--muted);
+  font-variant-numeric: tabular-nums; }
+.replay-weeks span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.replay-weeks span:first-child { transform: none; }
 
 .text-btn { border: 0; background: none; padding: 0; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; font-size: 14px; }
 .text-btn:hover { text-decoration-thickness: 2px; }
@@ -116,8 +191,8 @@ button { cursor: pointer; }
    keeps its full height. Keep the width in step with RAIL_W in page.tsx. */
 @media (min-width: 900px) {
   .sheet {
-    position: fixed; top: calc(12px + var(--topbar-h) + 10px); left: 12px; width: var(--rail-w);
-    max-height: calc(100vh - var(--topbar-h) - 34px - var(--bar-h));
+    position: fixed; top: calc(12px + var(--topbar-h) + 10px + var(--replay-h)); left: 12px; width: var(--rail-w);
+    max-height: calc(100vh - var(--topbar-h) - 34px - var(--bar-h) - var(--replay-h));
     border-radius: 12px; box-shadow: var(--lift);
   }
 }
@@ -348,9 +423,16 @@ button { cursor: pointer; }
 @media (max-width: 720px) {
   :root { --bar-h: calc(60px + var(--fine-rows) * var(--fine-h) + env(safe-area-inset-bottom)); }
   .topbar { top: 8px; left: 8px; right: 8px; height: auto; justify-content: space-between; padding: 6px 8px 6px 12px; }
-  .tagline, .seg-label, .fresh { display: none; }
+  .tagline, .fresh { display: none; }
   .wordmark { font-size: 22px; }
   .segmented button { padding: 3px 8px; font-size: 13px; }
+  .segmented .seg-date { max-width: 112px; }
+  .seg-long { display: none; }
+  .seg-short { display: inline; }
+  .replay { left: 8px; right: 8px; width: auto; top: 60px; padding: 8px 10px 6px; }
+  .replay-count, .replay-busiest { display: none; }
+  .segmented .seg-replay, .segmented .seg-date { margin-left: 9px; }
+  .segmented .seg-replay::before, .segmented .seg-date::before { left: -6px; }
   .maplibregl-ctrl-top-right { top: 64px; }
   .maplibregl-ctrl-top-right .maplibregl-ctrl-group { display: none; }
   .panel-open .maplibregl-ctrl-top-right { right: 8px; }
