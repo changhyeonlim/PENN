@@ -10,7 +10,11 @@ in plain code so the rules are testable and the model cannot drop them:
                     (14 days or less) on an arterial (class 1-3). Split into new (starts inside the
                     window) and ongoing (started before it).
     minor           everything else, returned only as counts by plain-language kind: sidewalk work,
-                    parking and loading zones, lane work on side streets, long lane work, planned work
+                    parking and loading zones, lane work on side streets, long lane work, planned work,
+                    and work on streets just outside the neighborhood asked about
+
+For a neighborhood, a record counts only on the segments inside its outline (locate.area_inside): the
+area's r9 cells reach a block or two past it.
 
 Closures that belong together become one group: permits of one kind with the same dates (eight
 block-party permits closing Walnut St for Open Streets), or announced closures from one notice on
@@ -21,6 +25,8 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from datetime import date, datetime
+
+import h3
 
 from ..config import LOCAL_TZ
 
@@ -38,6 +44,7 @@ MINOR_KINDS = {
     "side_closure": "side-street closures",
     "block_party": "block parties on side streets",
     "planned": "planned or open-ended work with no firm dates",
+    "outside": "work on streets just outside the area",
     "other": "other permits",
 }
 
@@ -217,12 +224,37 @@ def _mark_main(r: dict) -> dict:
     return r | {"main_street": cls is not None and cls <= MAJOR_FOR_PARTIAL}
 
 
-def brief(rows: list[dict], start: str) -> dict:
-    """Sort search_events rows (with seg_ids) into the trip brief. `start` is the window start (ISO)."""
+def _clip(r: dict, inside: frozenset[int] | None) -> dict | None:
+    """The record kept to the segments whose middle lies inside the area's outline; None when every
+    segment is outside. Records with no segments (listings, unplaced closures) stay as they are."""
+    if not inside or not r.get("seg_ids"):
+        return r
+    from ..geo import intersections
+    from ..geo.locate import INSIDE_RES
+    by_id = intersections.network().by_id
+
+    def mid_inside(i: int) -> bool:
+        s = by_id.get(i)
+        if s is None or not s.coords:
+            return True                       # unknown segment: keep it rather than lose the record
+        (x0, y0), (x1, y1) = s.coords[0], s.coords[-1]
+        return h3.str_to_int(h3.latlng_to_cell((y0 + y1) / 2, (x0 + x1) / 2, INSIDE_RES)) in inside
+
+    keep = [i for i in r["seg_ids"] if mid_inside(i)]
+    return r | {"seg_ids": keep} if keep else None
+
+
+def brief(rows: list[dict], start: str, inside: frozenset[int] | None = None) -> dict:
+    """Sort search_events rows (with seg_ids) into the trip brief. `start` is the window start (ISO);
+    `inside` a neighborhood's outline (locate.area_inside), None for a corner, address or pin."""
     w0 = datetime.fromisoformat(start).astimezone(LOCAL_TZ).date()
     events, new, ongoing = [], [], []
     minor: dict[str, int] = defaultdict(int)
     for r in rows:
+        r = _clip(r, inside)
+        if r is None:
+            minor[MINOR_KINDS["outside"]] += 1
+            continue
         t = tier(r, _seg_class(r.get("seg_ids") or []))
         if t == "event":
             events.append(r)

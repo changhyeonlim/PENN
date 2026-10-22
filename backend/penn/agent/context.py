@@ -223,10 +223,12 @@ class Context:
         detail = choose_detail(self.message, place.loc.method)
         max_days = short_term_days(self.message)
         token = tools.LEGS.set(place.loc.seg_ids or None)   # exact legs when a corner was named
+        area = tools.AREA.set(place.loc.inside or None)     # a neighborhood's real outline
         try:
             out = tools.search_events(place.loc.cells, win.window.start.isoformat(), win.window.end.isoformat(),
                                       include_311=include_311, detail=detail, max_days=max_days)
         finally:
+            tools.AREA.reset(area)
             tools.LEGS.reset(token)
         self.searches.append((place_id, window_id))
         if detail == "full" and isinstance(out.get("events"), list):

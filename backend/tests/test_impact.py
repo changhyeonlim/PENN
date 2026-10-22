@@ -57,3 +57,25 @@ def test_ongoing_and_minor_counts(monkeypatch):
     assert b["minor"]["count"] == 3
     assert set(b["minor"]["by_kind"]) == {"sidewalk work", "parking and loading zones", "lane work on side streets"}
     assert "seg_ids" not in b["getting_around"]["ongoing"][0]
+
+
+def test_area_outline_drops_records_just_outside(monkeypatch):
+    monkeypatch.setattr(impact, "_seg_class", lambda seg_ids: 4)
+    monkeypatch.setattr(impact, "_clip", lambda r, inside: None if r["event_id"].endswith(":1") else r)
+    rows = [permit(1, "Full Closure", seg_ids=[10]), permit(2, "Full Closure", seg_ids=[20])]
+    b = impact.brief(rows, W0, inside=frozenset({1}))
+    assert [i["event_id"] for i in b["getting_around"]["new"]] == ["lane_closures:2"]
+    assert b["minor"]["by_kind"] == {"work on streets just outside the area": 1}
+
+
+def test_clip_keeps_boundary_streets_and_drops_the_neighbor():
+    """Fairmount's outline runs along Poplar St; W Harper St (1900 block) is in Francisville."""
+    from penn.geo import intersections, locate
+    if not intersections.network().by_id:
+        import pytest
+        pytest.skip("no street centerline")
+    inside = locate.area_inside("fairmount")
+    poplar_2400, poplar_2200, harper_1900 = 420179, 420195, 421565
+    r = permit(1, seg_ids=[poplar_2400, poplar_2200, harper_1900])
+    assert impact._clip(r, inside)["seg_ids"] == [poplar_2400, poplar_2200]
+    assert impact._clip(permit(2, seg_ids=[harper_1900]), inside) is None

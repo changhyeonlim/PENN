@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
+import h3
 import httpx
 
 from ..config import settings
@@ -31,6 +33,7 @@ class Resolved:
     needs_pin: bool = False
     seg_ids: list[int] = field(default_factory=list)   # intersection legs (centerline seg_id)
     point: tuple[float, float] | None = None            # (lon, lat) of a corner, address or click, for the map's marker
+    inside: frozenset[int] = frozenset()                # a neighborhood's outline in fine cells (area_inside)
 
 
 NAME_KEYS = ("LISTNAME", "MAPNAME", "name", "NAME")  # OpenDataPhilly neighborhoods use LISTNAME
@@ -83,6 +86,30 @@ def areas() -> dict[str, list[int]]:
     if _AREAS is None:
         _AREAS = _load_areas()
     return _AREAS
+
+
+# An r9 cell is ~350 m across, so a neighborhood's cells reach a block or two past its outline: asked about
+# Fairmount, the search found milling on W Harper St in Francisville, 190 m outside, and the brief led with it.
+# The outline in r11 cells (~50 m) says which streets are really in the area; one ring more keeps the streets
+# that form its edge (Poplar St is Fairmount's).
+INSIDE_RES = 11
+
+
+@lru_cache(maxsize=64)
+def area_inside(name: str) -> frozenset[int]:
+    """The named area's outline as r11 cells plus a ~50 m margin; empty for a name with no outline."""
+    alias_file = AREAS_DIR / "aliases.json"
+    aliases = {k.lower(): v for k, v in json.loads(alias_file.read_text()).items()} if alias_file.exists() else {}
+    wanted = {m.lower() for m in aliases.get(name, [name])}
+    cells: set[str] = set()
+    for path in AREAS_DIR.glob("*.geojson"):
+        for f in json.loads(path.read_text()).get("features", []):
+            if _feature_name(f.get("properties") or {}) not in wanted:
+                continue
+            g = f.get("geometry") or {}
+            for rings in [g["coordinates"]] if g.get("type") == "Polygon" else g.get("coordinates", []):
+                cells.update(h3.int_to_str(c) for c in polygon_cells(rings, INSIDE_RES))
+    return frozenset(h3.str_to_int(n) for c in cells for n in h3.grid_disk(c, 1))
 
 
 def from_click(lon: float, lat: float, k: int = 1) -> Resolved:
@@ -160,7 +187,7 @@ def from_text(text: str, client: httpx.Client | None = None) -> Resolved:
     if lm and (area is None or lm[1] > len(area[0])):
         return from_landmark(lm[0])
     if area:
-        return Resolved(cells=area[1], label=area[0].title(), method="area")
+        return Resolved(cells=area[1], label=area[0].title(), method="area", inside=area_inside(area[0]))
     q = text.replace(" and ", " & ")
     try:
         c = client or httpx.Client(timeout=10)

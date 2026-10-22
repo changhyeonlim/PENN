@@ -20,6 +20,9 @@ from . import history
 # them (311 reports, closures not placed on the centerline) still match by cells. The model never
 # handles the list: it is server-side context, like the resolved cells.
 LEGS: ContextVar[list[int] | None] = ContextVar("penn_legs", default=None)
+# A neighborhood's outline in fine cells (locate.area_inside), set the same way: the search still matches by
+# the area's r9 cells, and the brief then keeps to the streets inside the outline.
+AREA: ContextVar[frozenset[int] | None] = ContextVar("penn_area", default=None)
 
 
 def place_filter(alias: str = "") -> str:
@@ -125,7 +128,7 @@ def search_events(cells: list[int], start: str, end: str, types: list[str] | Non
     rows = rows[:limit]
     if brief:
         from ..agent import impact
-        out = impact.brief(_jsonable(rows), start) | {"count": len(rows), "truncated": truncated}
+        out = impact.brief(_jsonable(rows), start, inside=AREA.get()) | {"count": len(rows), "truncated": truncated}
     else:
         out = {"events": _jsonable(rows), "count": len(rows), "truncated": truncated}
     # The model often answers "in past years" / "will X close" questions from this tool alone and
