@@ -59,6 +59,35 @@ def test_ongoing_and_minor_counts(monkeypatch):
     assert "seg_ids" not in b["getting_around"]["ongoing"][0]
 
 
+def test_street_event_without_notice_expects_roadblocks():
+    parade = {"event_id": "visitphilly:halloween-parade", "source": "visitphilly", "event_type": "event",
+              "title": "20th Annual Halloween Festival & Parade in Fairmount",
+              "description": "2333 Fairmount Avenue, Philadelphia, PA", "start_date": "2026-10-25",
+              "end_date": "2026-10-25", "start_ts": "2026-10-25T14:00:00-04:00", "end_ts": "2026-10-25T16:00:00-04:00",
+              "seg_ids": []}
+    show = {**parade, "event_id": "ticketmaster:osees", "source": "ticketmaster", "title": "Osees",
+            "description": "Union Transfer, 1026 Spring Garden Street, Philadelphia, PA; Music"}
+    exhibit = {**show, "event_id": "visitphilly:exhibit", "title": "A Museum Show", "end_date": "2027-03-01"}
+    e, crowd = impact.brief([parade, show, exhibit], W0)["getting_around"]["expected"]
+    assert e["impact"] == "roadblocks" and e["street"] == "Fairmount Ave"
+    assert e["when"] == "Sun Oct 25, 2:00 PM – 4:00 PM" and e["cite"] == "[id:visitphilly:halloween-parade]"
+    assert crowd["impact"] == "crowds" and crowd["street"] == "Spring Garden St"   # a show brings crowds and rideshares
+    assert crowd["event_ids"] == ["ticketmaster:osees"]                           # a months-long exhibit does not
+    notice = {"event_id": "event_closures:1", "source": "event_closures", "event_type": "event",
+              "title": "Halloween Parade: Fairmount Ave", "start_ts": "2026-10-25T13:00:00-04:00",
+              "end_ts": "2026-10-25T17:00:00-04:00", "seg_ids": []}
+    assert "expected" not in impact.brief([parade, notice], W0)["getting_around"]   # the City's notice says it
+
+
+def test_long_lane_work_on_main_streets_is_one_line(monkeypatch):
+    monkeypatch.setattr(impact, "_seg_class", lambda seg_ids: 2)
+    monkeypatch.setattr(impact, "_lane_work", lambda rows: {"event_ids": [r["event_id"] for r in rows]})
+    rows = [permit(1, start="2026-10-02", end="2026-11-16"), permit(2, start="2026-09-28", end="2026-12-28")]
+    b = impact.brief(rows, W0)
+    assert b["getting_around"]["lane_work"]["event_ids"] == ["lane_closures:1", "lane_closures:2"]
+    assert b["minor"]["count"] == 0                     # not counted twice
+
+
 def test_area_outline_drops_records_just_outside(monkeypatch):
     monkeypatch.setattr(impact, "_seg_class", lambda seg_ids: 4)
     monkeypatch.setattr(impact, "_clip", lambda r, inside: None if r["event_id"].endswith(":1") else r)
@@ -79,3 +108,11 @@ def test_clip_keeps_boundary_streets_and_drops_the_neighbor():
     r = permit(1, seg_ids=[poplar_2400, poplar_2200, harper_1900])
     assert impact._clip(r, inside)["seg_ids"] == [poplar_2400, poplar_2200]
     assert impact._clip(permit(2, seg_ids=[harper_1900]), inside) is None
+
+
+def test_event_street():
+    assert impact.event_street("2333 Fairmount Avenue, Philadelphia, PA") == "Fairmount Ave"
+    assert impact.event_street("Theatre of Living Arts, 334 South St, Philadelphia, PA; Music") == "South St"
+    assert impact.event_street("Field Day, 923 N. 2nd Street, Philadelphia, PA") == "N 2nd St"
+    assert impact.event_street("6800 & 6900 blocks of Torresdale Avenue, Philadelphia, PA") == "Torresdale Ave"
+    assert impact.event_street("Shofuso Japanese Cultural Center, Lansdowne & Horticultural drives") is None

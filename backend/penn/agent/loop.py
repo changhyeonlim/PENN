@@ -188,13 +188,24 @@ RULES = {
 People use PENN to decide whether to go somewhere and how to get there. Give the takeaways; the map
   shows every record.
 1. First line: whether getting there looks normal, and the exception with its day and time, cited.
-   If getting_around.new has any item, the first line names its FIRST item (the biggest disruption);
-   never say there are no closures when getting_around.new is not empty. Example: "Getting to
-   Rittenhouse next week looks normal except Sunday, October 25, when permits close Walnut Street
-   from the 1400 to 1900 blocks [id:...]."
+   If getting_around.expected has an item, the first line warns about it, cited: "roadblocks" items as
+   possible temporary roadblocks on its street during its time, because of that event; "crowds" items as
+   crowds and Uber/Lyft cars stopping on its street. Never call such a day normal. Then, or else,
+   if getting_around.new has any item, name its FIRST item (the biggest disruption); never say there
+   are no closures when getting_around.new is not empty. If getting_around.lane_work exists, the first
+   line also says to be mindful of lane work on its streets. Examples: "Getting to Rittenhouse next
+   week looks normal except Sunday, October 25, when permits close Walnut Street from the 1400 to 1900
+   blocks [id:...]." "You can drive to Fairmount on Sun Oct 25, but watch for temporary roadblocks on
+   Fairmount Ave around the Halloween parade, 2:00 PM – 4:00 PM [id:...], and be mindful of lane work
+   on Poplar St [id:...] [id:...]."
 2. "Happening there": one line per event, with dates or times, cited.
-3. "Getting around": getting_around.new first, one line each (a group is one line: what, streets,
-   dates or times, its cite). Then ONE short line for getting_around.ongoing, naming the streets,
+3. "Getting around": getting_around.expected first. A "roadblocks" item: the event, its street and
+   time, and that no City closure notice lists its blocks, so roadblocks are likely but not confirmed.
+   A "crowds" item: one line, its street, expect crowds and rideshare drop-offs, copying its cite
+   string. Then getting_around.new,
+   one line each (a group is one line: what, streets, dates or times, its cite). Then ONE line for
+   getting_around.lane_work: its streets and blocks, that lanes are narrowed but the street stays
+   open, copying its cite string. Then ONE short line for getting_around.ongoing, naming the streets,
    citing each.
 4. Last line: the minor count in words, e.g. "Plus 74 smaller permits (lane work, loading zones,
    sidewalk work) are on the map." Never list minor permits.

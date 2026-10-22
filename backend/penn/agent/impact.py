@@ -8,10 +8,13 @@ in plain code so the rules are testable and the model cannot drop them:
     getting_around  closures that change a drive in: announced (timed) street closures, a Full
                     Closure on a collector or bigger street (class 1-4), a short Partial Closure
                     (14 days or less) on an arterial (class 1-3). Split into new (starts inside the
-                    window) and ongoing (started before it).
+                    window) and ongoing (started before it). Two more lines when they apply:
+                    expected, a parade or street fair listed with no City closure notice that day (its
+                    street may be blocked for a while), and lane_work, the main streets with weeks-long
+                    lane closures (one line, not one per permit).
     minor           everything else, returned only as counts by plain-language kind: sidewalk work,
-                    parking and loading zones, lane work on side streets, long lane work, planned work,
-                    and work on streets just outside the neighborhood asked about
+                    parking and loading zones, lane work on side streets, planned work, and work on
+                    streets just outside the neighborhood asked about
 
 For a neighborhood, a record counts only on the segments inside its outline (locate.area_inside): the
 area's r9 cells reach a block or two past it.
@@ -47,6 +50,22 @@ MINOR_KINDS = {
     "outside": "work on streets just outside the area",
     "other": "other permits",
 }
+LANE_WORK_STREETS = 4     # lane_work names at most this many main streets, the most permits first
+
+# What a listed event does to the street it is on, when no City notice covers that day. A parade or street fair
+# takes the street itself ("roadblocks"); any other dated listing, a show or a festival, brings crowds and
+# Uber/Lyft cars stopping at the curb ("crowds"). "Festival" alone is often indoors, so it is not a street event;
+# a listing whose address is blocks of a street ("6800 & 6900 blocks of Torresdale Avenue") is one.
+STREET_EVENT = re.compile(r"\b(parade|procession|street (fair|festival|party)|block party|5k|10k|fun run|open streets)\b",
+                          re.I)
+ON_THE_STREET = re.compile(r"\bblocks? of\b|\bbetween\b", re.I)
+ADDRESS_STREET = re.compile(r"\b\d+[A-Z]?(?:\s*&\s*\d+)?\s+(?:blocks? of\s+)?(?:([NSEW])\.?\s+)?([A-Za-z0-9]+(?: [A-Za-z0-9]+)*?)\s+"
+                            r"(street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr|parkway|pkwy|lane|ln|place|pl)\b",
+                            re.I)
+SUFFIX = {"street": "St", "avenue": "Ave", "road": "Rd", "boulevard": "Blvd", "drive": "Dr", "parkway": "Pkwy",
+          "lane": "Ln", "place": "Pl"}
+CROWD_MAX_DAYS = 31       # a months-long exhibition is not a crowd on one day; a three-week Halloween run is
+CROWD_STREETS = 3         # crowds name at most this many streets, the most listings first
 
 
 def _seg_class(seg_ids: list[int]) -> int | None:
@@ -244,16 +263,80 @@ def _clip(r: dict, inside: frozenset[int] | None) -> dict | None:
     return r | {"seg_ids": keep} if keep else None
 
 
+def _lane_work(rows: list[dict]) -> dict | None:
+    """Weeks-long lane closures on main streets as one line: which streets and blocks, citing each permit.
+    Each alone is background; together they say "expect a lane down on Poplar St"."""
+    if not rows:
+        return None
+    from ..geo import intersections
+    by_id = intersections.network().by_id
+    per_street: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        for name in {_pretty(str(by_id[i].street)) for i in r.get("seg_ids") or []
+                     if i in by_id and 1 <= by_id[i].cls <= MAJOR_FOR_PARTIAL}:
+            per_street[name].append(r)
+    top = sorted(per_street, key=lambda n: -len(per_street[n]))[:LANE_WORK_STREETS]
+    picked = list({r["event_id"]: r for n in top for r in per_street[n]}.values())
+    segs = [i for r in picked for i in r.get("seg_ids") or []
+            if i in by_id and _pretty(str(by_id[i].street)) in top]
+    ids = [r["event_id"] for r in picked]
+    return {"kind": "lane closures lasting weeks (Partial Closure: the street stays open)",
+            "streets": streets_text(segs), "titles": sorted({r.get("title", "") for r in picked}),
+            "more_streets": max(0, len(per_street) - len(top)), "event_ids": ids,
+            "cite": " ".join(f"[id:{i}]" for i in ids)}
+
+
+def event_street(description: str) -> str | None:
+    """'Fairmount Ave' from '2333 Fairmount Avenue, Philadelphia, PA' or 'Union Transfer, 1026 Spring Garden
+    Street, ...'; None when the listing gives no street address."""
+    m = ADDRESS_STREET.search(description or "")
+    if not m:
+        return None
+    direction, name, suffix = m.groups()
+    return " ".join(filter(None, [direction and direction.upper(), *(w.capitalize() for w in name.split()),
+                                  SUFFIX.get(suffix.lower(), suffix.capitalize())]))
+
+
+def _expected(events: list[dict], announced: list[dict]) -> list[dict]:
+    """What listed events do to their streets when no City closure notice covers that day (an event with a
+    notice is already in getting_around as announced closures): roadblocks for a parade or street fair, one
+    item each; crowds and rideshare stops for any other dated listing, one item per street."""
+    noticed = {_span(r)[0] for r in announced if r.get("source") == "event_closures"}
+    roadblocks, crowds = [], defaultdict(list)
+    for e in events:
+        street = event_street(e.get("description") or "")
+        s, end = _span(e)
+        if street is None or s in noticed:
+            continue
+        if STREET_EVENT.search(e.get("title") or "") or ON_THE_STREET.search(e.get("description") or ""):
+            times = (f", {_clock(e['start_ts'])}" + (f" – {_clock(e['end_ts'])}" if e.get("end_ts") else "")
+                     if e.get("start_ts") else "")
+            roadblocks.append({"impact": "roadblocks", "event_id": e["event_id"], "title": e.get("title"),
+                               "street": street, "when": when(e) + times,
+                               "note": f"an event listing, not a City closure notice: expect temporary roadblocks "
+                                       f"on {street} around it, not a confirmed closure",
+                               "cite": f"[id:{e['event_id']}]"})
+        elif s is not None and end is not None and (end - s).days < CROWD_MAX_DAYS:
+            crowds[street].append(e)
+    out = roadblocks
+    for street in sorted(crowds, key=lambda st: -len(crowds[st]))[:CROWD_STREETS]:
+        ids = [e["event_id"] for e in crowds[street]]
+        out.append({"impact": "crowds", "street": street, "titles": [e.get("title") for e in crowds[street]],
+                    "note": f"listed events: expect crowds and Uber/Lyft cars stopping on {street} around their times",
+                    "event_ids": ids, "cite": " ".join(f"[id:{i}]" for i in ids)})
+    return out
+
+
 def brief(rows: list[dict], start: str, inside: frozenset[int] | None = None) -> dict:
     """Sort search_events rows (with seg_ids) into the trip brief. `start` is the window start (ISO);
     `inside` a neighborhood's outline (locate.area_inside), None for a corner, address or pin."""
     w0 = datetime.fromisoformat(start).astimezone(LOCAL_TZ).date()
-    events, new, ongoing = [], [], []
+    events, new, ongoing, long_lane = [], [], [], []
     minor: dict[str, int] = defaultdict(int)
     for r in rows:
         r = _clip(r, inside)
         if r is None:
-            minor[MINOR_KINDS["outside"]] += 1
+            minor["outside"] += 1
             continue
         t = tier(r, _seg_class(r.get("seg_ids") or []))
         if t == "event":
@@ -261,11 +344,17 @@ def brief(rows: list[dict], start: str, inside: frozenset[int] | None = None) ->
         elif t == "getting_around":
             s, _ = _span(r)
             (new if s is None or s >= w0 else ongoing).append(_mark_main(r))
+        elif t == "long_lane":
+            long_lane.append(r)
         else:
-            minor[MINOR_KINDS[t]] += 1
+            minor[t] += 1
+    getting_around = {"expected": _expected(events, new + ongoing),
+                      "new": sorted(_grouped(new), key=_weight), "ongoing": sorted(_grouped(ongoing), key=_weight),
+                      "lane_work": _lane_work(long_lane)}
+    by_kind = {MINOR_KINDS[k]: n for k, n in sorted(minor.items(), key=lambda kv: -kv[1]) if n}
     return {
         "detail": "brief",
         "events": [_compact(r) for r in events],
-        "getting_around": {"new": sorted(_grouped(new), key=_weight), "ongoing": sorted(_grouped(ongoing), key=_weight)},
-        "minor": {"count": sum(minor.values()), "by_kind": dict(sorted(minor.items(), key=lambda kv: -kv[1]))},
+        "getting_around": {k: v for k, v in getting_around.items() if v or k in ("new", "ongoing")},
+        "minor": {"count": sum(by_kind.values()), "by_kind": by_kind},
     }
