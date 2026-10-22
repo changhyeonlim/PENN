@@ -16,7 +16,8 @@ export function GuardLine({ guard }: { guard: Guard }) {
       <div>
         <p>
           <b>Hallucination guard</b>
-          {cited > 0 && <> · {plural(cited, "citation")}, each matched to a record PENN retrieved for this answer</>}
+          {cited === 1 && <> · 1 citation, matched to a record PENN retrieved for this answer</>}
+          {cited > 1 && <> · {cited} citations, each matched to a record PENN retrieved for this answer</>}
           {resolved_in_code && <> · place and dates worked out in code</>}
         </p>
         {caught.length > 0 && (
