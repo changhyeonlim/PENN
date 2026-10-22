@@ -89,6 +89,46 @@ def map_layer(min_lat: float | None = None, min_lon: float | None = None,
             "window": {"start": s, "end": e}}
 
 
+# What makes a day busy, for the map's replay slider: things people go to and the street closures they bring.
+# Listings (visitphilly), ticketed shows, every street closed by a City event notice, and block parties. Records
+# lasting more than a month (an exhibition, a season) count on no day: they say nothing about one day.
+BUSY_SQL = """
+    SELECT day,
+           countIf(source = 'visitphilly') AS listings,
+           countIf(source = 'ticketmaster') AS ticketed,
+           countIf(source = 'event_closures') AS closures,
+           uniqExactIf(splitByChar(':', title)[1], source = 'event_closures') AS notices,
+           countIf(event_type = 'block_party') AS block_parties,
+           count() AS total
+    FROM (
+        SELECT source, event_type, title,
+               coalesce(start_date, toDate(start_ts, 'America/New_York')) AS d0,
+               coalesce(end_date, toDate(coalesce(end_ts, start_ts), 'America/New_York'), d0) AS d1
+        FROM events FINAL
+        WHERE source IN ('visitphilly', 'ticketmaster', 'event_closures') OR event_type = 'block_party'
+    )
+    ARRAY JOIN arrayMap(i -> addDays(toDate(%(start)s), i), range(toUInt32(dateDiff('day', toDate(%(start)s), toDate(%(end)s))))) AS day
+    WHERE d0 <= day AND d1 >= day AND dateDiff('day', d0, d1) <= 31
+    GROUP BY day ORDER BY day
+"""
+
+
+@app.get("/busiest")
+def busiest(start: str, end: str):
+    """Each day in [start, end) (YYYY-MM-DD) with its listings, ticketed shows, event street closures (and the
+    City notices behind them) and block parties, and the busiest day by their total. The replay slider draws
+    the days as bars and opens on the busiest."""
+    try:
+        s, e = date.fromisoformat(start), date.fromisoformat(end)
+    except ValueError:
+        raise HTTPException(400, "start and end are dates, YYYY-MM-DD")
+    if not 0 < (e - s).days <= 92:
+        raise HTTPException(400, "end must be after start, at most 92 days")
+    days = tools._jsonable(db.query(BUSY_SQL, {"start": s.isoformat(), "end": e.isoformat()}))
+    top = max(days, key=lambda d: d["total"], default=None)
+    return {"days": days, "busiest": top["day"] if top else None}
+
+
 @app.get("/events/{event_id}")
 def event(event_id: str):
     rows = db.query(f"SELECT {tools.EVENT_FIELDS} FROM events FINAL WHERE event_id = %(id)s", {"id": event_id})
