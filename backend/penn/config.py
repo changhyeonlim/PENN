@@ -44,8 +44,9 @@ class Settings:
     model_nano: str = field(default_factory=lambda: os.getenv("MODEL_NANO", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"))
     model_super: str = field(default_factory=lambda: os.getenv("MODEL_SUPER", "nvidia/nemotron-3-super-120b-a12b"))
     model_ultra: str = field(default_factory=lambda: os.getenv("MODEL_ULTRA", "nvidia/Nemotron-3-Ultra-550b-a55b"))
-    # The one model that runs every Ask PENN turn; empty means model_super. Super matched Ultra on the eval
-    # (28 vs 29 of 51) at a 4s median and 8s p90; Ultra's p90 was 49s. Set MODEL_CHAT to compare.
+    # The one model that runs every Ask PENN turn; empty means model_super. Over four eval runs Ultra passed
+    # more (30.25 vs 25.0 of 51) but its p90 was 33.4s against Super's 7.3s (docs/eval-results.md, "Super or
+    # Ultra"). Set MODEL_CHAT to compare.
     model_chat: str = field(default_factory=lambda: os.getenv("MODEL_CHAT", ""))
     # Per model call. Super's largest call on the eval was 1.5k output tokens and 6s; Ultra and Qwen3.5
     # reached the endpoint's own 8192 cap, so set PENN_MAX_TOKENS=8192 (and a longer timeout) to run those.
