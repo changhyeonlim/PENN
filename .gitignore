@@ -20,3 +20,17 @@ data/web_cache/
 
 # Street centerline (33 MB); geocode_closures downloads it when missing
 data/centerline/
+
+# ClickHouse dumps from deploy/export_db.sh (hundreds of MB; shipped to the VM with scp, not git)
+dumps/
+# deploy/release.sh build context (code + data copied in, deleted after the build)
+.release/
+
+# Copies of City pages (phila.gov terms: copying beyond single unmodified pages needs permission): local only
+data/snapshots/phila_press/
+scripts/phila_press/
+
+# Local scratch work (experiments, history-splitting tools, commit patches): never tracked
+scratch/
+# Preview launch config with this machine's paths
+.claude/launch.json
