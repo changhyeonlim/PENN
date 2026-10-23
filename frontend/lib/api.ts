@@ -74,7 +74,7 @@ export type Extent = "full" | "lane" | "sidewalk";
 /** Listings mark something happening at a place, never a closure: visitphilly picks and Ticketmaster events. */
 export const isListing = (c: Category) => c === "listing" || c === "ticketed";
 
-/** Sources of events that happen at a place without closing a street: drawn as flags, never as closures. */
+/** Sources of events that happen at a place without closing a street: drawn as pins, never as closures. */
 export const LISTING_SOURCES = ["visitphilly", "ticketmaster"];
 export const LISTED_BY: Record<string, string> = { visitphilly: "visitphilly.com", ticketmaster: "Ticketmaster" };
 
@@ -99,14 +99,14 @@ export function extent(e: PennEvent): Extent {
 /** The reasons, then the kinds that close nothing: the order of the key. Construction is work-zone orange, the
  *  color of cones and "Road Work Ahead" signs; block parties are green, across the color wheel from it, so the
  *  two never blur on a thin line (rose did); no parking is a neutral grey, since it closes nothing and teal sat
- *  too close to the green. */
+ *  too close to the green. The listings that close nothing are ink pins (pinSvg). */
 export const CATEGORIES: { key: Category; color: string; label: string; detail: string }[] = [
   { key: "construction", color: "#E35205", label: "Construction", detail: "Road, utility or building work permit" },
   { key: "event", color: "#5A3FC0", label: "Event closure", detail: "Announced by the City for an event" },
   { key: "blockparty", color: "#0E9F6E", label: "Block party", detail: "Block party permit" },
   { key: "parking", color: "#6B7280", label: "No parking", detail: "Parking or loading restriction" },
-  { key: "listing", color: "#1D4ED8", label: "Event listing", detail: "visitphilly.com pick; no street closure listed" },
-  { key: "ticketed", color: "#A3166F", label: "Ticketed event", detail: "Ticketmaster listing; no street closure listed" },
+  { key: "listing", color: "#1B2433", label: "Event listing", detail: "visitphilly.com pick; no street closure listed" },
+  { key: "ticketed", color: "#1B2433", label: "Ticketed event", detail: "Ticketmaster listing; no street closure listed" },
 ];
 /** Plain-language meaning of each category, for the key's explanation. */
 export const MEANING: Record<Category, string> = {
@@ -123,13 +123,19 @@ export const EXTENTS: { key: Extent; label: string; detail: string }[] = [
   { key: "lane", label: "One lane", detail: "A lane is closed; traffic still gets through" },
   { key: "sidewalk", label: "Sidewalk", detail: "Sidewalk only; the road stays open" },
 ];
-/** Basemap road colors, set over Positron's so highways read apart from streets (see page.tsx). Every other road
- * class is drawn as one plain street: OpenStreetMap's primary/secondary/tertiary/residential tags change block by
- * block on the same Philadelphia street, so a major-vs-local split looks random. */
-export const ROAD = { highway: "#B4C2D3", highwayEdge: "#8798AE", street: "#FFFFFF", streetEdge: "#D3D8DF" };
-/** Parks and woods as a pale olive, over Positron's near-invisible grey-green: enough to find Rittenhouse Square
- * or Fairmount Park, quiet enough that no permit color has to compete with it. */
-export const PARK = { park: "#DCE1BC", wood: "#D0D7AC" };
+/** The ground under the streets, set over Positron's greys: a light limestone city with one step darker for
+ * buildings, so the white street grid is the brightest thing on the map and permit colors sit on paper, not on
+ * a grey wash. Residential land is the plain ground (Positron greys it, which tints nearly every block). The
+ * rivers get a real blue-green: the Schuylkill and the Delaware frame Center City. */
+export const GROUND = { land: "#F4F5F1", building: "#E8E9E3", buildingEdge: "#DCDED6", water: "#BCD5DB", waterway: "#A9C8D0" };
+/** Basemap road colors, set over Positron's (see page.tsx). Highways are the same white as streets, told apart by
+ * their width and a firmer edge; a blue-grey highway competed with the event purple. Every other road class is
+ * drawn as one plain street: OpenStreetMap's primary/secondary/tertiary/residential tags change block by block on
+ * the same Philadelphia street, so a major-vs-local split looks random. */
+export const ROAD = { highway: "#FFFFFF", highwayEdge: "#C2C7BF", street: "#FFFFFF", streetEdge: "#DADDD6" };
+/** Parks and woods as a quiet sage: enough to find Rittenhouse Square or Fairmount Park, green enough to read as
+ * a park, and soft enough that no permit color has to compete with it. */
+export const PARK = { park: "#D3E2CC", wood: "#C8D9C0" };
 /** Neighborhood outlines: slate, not green, so they read apart from the parks and from the sign-green outline of
  * the neighborhood an answer is about. */
 export const HOOD = { line: "#56657D", label: "#46546B" };
@@ -157,21 +163,22 @@ export const LABEL = Object.fromEntries(CATEGORIES.map(c => [c.key, c.label])) a
 export const DETAIL = Object.fromEntries(CATEGORIES.map(c => [c.key, c.detail])) as Record<Category, string>;
 export const HIGHLIGHT = "#FFD43B";
 
-/** The listing marker: a pennant on a pole, white-edged so it reads over red closure lines. Blue with a "P" for a
- * visitphilly pick, magenta with a "T" for a ticketed event. One drawing for the map icon and the key. The pole's
- * foot (x 2.5, y 21 of 18 x 22) is the event's spot. */
-export function flagSvg(width: number, height: number, cat: Category = "listing"): string {
-  const blue = COLOR[cat], pole = cat === "ticketed" ? "#5C0C3F" : "#12306E", letter = cat === "ticketed" ? "T" : "P";
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 18 22">`
-    + `<line x1="2.5" y1="2" x2="2.5" y2="21" stroke="#fff" stroke-width="3.6" stroke-linecap="round"/>`
-    + `<line x1="2.5" y1="2" x2="2.5" y2="21" stroke="${pole}" stroke-width="1.7" stroke-linecap="round"/>`
-    + `<path d="M3.3 1.6H16.6L13.5 6.4L16.6 11.2H3.3Z" fill="${blue}" stroke="#fff" stroke-width="1.3" stroke-linejoin="round"/>`
-    + `<text x="9.4" y="9.5" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="7.6" font-weight="700" fill="#fff">${letter}</text>`
-    + `<circle cx="2.5" cy="21" r="1.5" fill="${pole}" stroke="#fff" stroke-width="1"/>`
-    + `</svg>`;
+/** The listing marker: an ink pin, white-edged so it reads over closure lines. Ink, not a reason's color: color on
+ * the map says why a street closes, and a listing closes none. A star inside for a visitphilly pick, a ticket stub
+ * for a Ticketmaster event. One drawing for the map icon and the key. The pin's tip (x 8, y 19.6 of 16 x 21) is the
+ * event's spot. */
+export function pinSvg(width: number, height: number, cat: Category = "listing"): string {
+  const ink = COLOR[cat];
+  const glyph = cat === "ticketed"
+    ? `<path d="M4.2 5.7h7.6v1.3a1.1 1.1 0 0 0 0 2.2v1.3H4.2V9.2a1.1 1.1 0 0 0 0-2.2z" fill="#fff"/>`
+      + `<line x1="9.5" y1="6" x2="9.5" y2="10.2" stroke="${ink}" stroke-width=".7" stroke-dasharray=".8 .7"/>`
+    : `<path d="M8 4.1l1.15 2.35 2.6.38-1.88 1.83.44 2.58L8 10.02 5.69 11.24l.44-2.58L4.25 6.83l2.6-.38z" fill="#fff"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 16 21">`
+    + `<path d="M8 19.6C8 19.6 1.2 12.9 1.2 8A6.8 6.8 0 0 1 14.8 8C14.8 12.9 8 19.6 8 19.6Z" fill="${ink}" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>`
+    + glyph + `</svg>`;
 }
-export const flagDataUrl = (width: number, height: number, cat: Category = "listing") =>
-  `data:image/svg+xml;charset=utf-8,${encodeURIComponent(flagSvg(width, height, cat))}`;
+export const pinDataUrl = (width: number, height: number, cat: Category = "listing") =>
+  `data:image/svg+xml;charset=utf-8,${encodeURIComponent(pinSvg(width, height, cat))}`;
 
 const DAY: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
 const TIME: Intl.DateTimeFormatOptions = { ...DAY, hour: "numeric", minute: "2-digit" };

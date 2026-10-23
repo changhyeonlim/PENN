@@ -44,7 +44,7 @@ type Props = {
   web?: WebSource[];
 };
 
-/** The model's light markdown (paragraphs, "- " lists, **bold**) with each citation as a numbered chip. */
+/** The model's light markdown (paragraphs, "- " lists, **bold**, *italic*) with each citation as a numbered chip. */
 export function AnswerText({ text, titles, selected, onCite, web = [] }: Props) {
   const body = clean(text);
   const order = citationOrder(text);
@@ -135,7 +135,13 @@ function External() {
   );
 }
 
+// *A title* in single asterisks, hugging its words, not part of **bold** and not a lone "*" in the text.
+const ITALIC = /(?<![*\w])\*(?![\s*])([^*\n]+?)(?<!\s)\*(?![*\w])/g;
+
+/** **bold**, then *italic* in what is left: the model sets event and permit names in italics. */
 function bold(s: string, key: string): ReactNode[] {
-  return s.split(/\*\*(.+?)\*\*/g).map((part, i) =>
-    i % 2 ? <strong key={`${key}b${i}`}>{part}</strong> : <Fragment key={`${key}s${i}`}>{part}</Fragment>);
+  return s.split(/\*\*(.+?)\*\*/g).flatMap((part, i) =>
+    i % 2 ? [<strong key={`${key}b${i}`}>{part}</strong>]
+      : part.split(ITALIC).map((bit, j) =>
+        j % 2 ? <em key={`${key}s${i}i${j}`}>{bit}</em> : <Fragment key={`${key}s${i}t${j}`}>{bit}</Fragment>));
 }

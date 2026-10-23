@@ -26,12 +26,13 @@ type Props = {
   playing: boolean; onPlay: (on: boolean) => void;
   inEffect: number;                      // listings, ticketed shows, event closures and block parties in effect at `at`
   onBusiest: () => void;
+  leaving?: boolean;                     // fading out after Replay is switched off
 };
 
 /** The replay's time slider. The month's days are the track, each bar as tall as that day is busy, and the
  *  handle is a needle through them: drag it, step it with the arrow keys, or play it, and the map's clock
  *  follows, so records fade in, take the street and drop off. */
-export function ReplayBar({ start, end, step, days, busiest, at, onAt, loading, playing, onPlay, inEffect, onBusiest }: Props) {
+export function ReplayBar({ start, end, step, days, busiest, at, onAt, loading, playing, onPlay, inEffect, onBusiest, leaving }: Props) {
   const first = new Date(start).toLocaleDateString("en-CA", { timeZone: NY });
   const current = new Date(at).toLocaleDateString("en-CA", { timeZone: NY });
   const count = Math.round((end - start) / DAY);
@@ -45,7 +46,7 @@ export function ReplayBar({ start, end, step, days, busiest, at, onAt, loading, 
   const top = days.find(d => d.day === busiest);
   const unit = step >= DAY ? "that day" : "then";
   return (
-    <section className="replay" aria-label="Replay: move the map through the month">
+    <section className={`replay${leaving ? " leaving" : ""}`} aria-label="Replay: move the map through the month">
       <div className="replay-head">
         <button type="button" className="replay-play" aria-label={playing ? "Pause" : step >= DAY ? "Play day by day" : "Play"}
           disabled={loading} onClick={() => onPlay(!playing)}>

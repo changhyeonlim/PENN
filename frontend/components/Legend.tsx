@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { CATEGORIES, COLOR, EXTENTS, flagDataUrl, HIGHLIGHT, HOOD, isListing, MEANING, MINOR, PARK, ROAD, STRENGTH, type Category, type Extent } from "@/lib/api";
+import { useSmoothSize } from "@/lib/motion";
+import { CATEGORIES, COLOR, EXTENTS, pinDataUrl, HIGHLIGHT, HOOD, isListing, MEANING, MINOR, PARK, ROAD, STRENGTH, type Category, type Extent } from "@/lib/api";
 
 // The weight samples are drawn in a neutral ink: the weight means the same in every reason's color.
 const WEIGHT_INK = "#5A6474";
@@ -9,12 +10,12 @@ const SHORT: Record<Extent, string> = { full: "Closed", lane: "1 lane", sidewalk
  *  `color` overrides the reason's color, for the key's weight samples, which apply to every reason. */
 export function Swatch({ cat, ext = "full", size = 28, opacity = 1, color }:
   { cat: Category | "cited"; ext?: Extent; size?: number; opacity?: number; color?: string }) {
-  if (cat !== "cited" && isListing(cat)) {   // the map's flag marker, centred in the swatch box
+  if (cat !== "cited" && isListing(cat)) {   // the map's pin marker at its map size (smaller blurs the glyph), centred in the swatch box
     return (
       // Opacity inline only when asked for, so a switched-off key row can still fade it from the stylesheet.
-      <span className="swatch swatch-flag" style={{ width: size, ...(opacity !== 1 && { opacity }) }} aria-hidden="true">
+      <span className="swatch swatch-pin" style={{ width: size, ...(opacity !== 1 && { opacity }) }} aria-hidden="true">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={flagDataUrl(13, 16, cat)} width={13} height={16} alt="" />
+        <img src={pinDataUrl(16, 21, cat)} width={16} height={21} alt="" />
       </span>
     );
   }
@@ -61,6 +62,9 @@ type Props = {
 export function Legend({ counts, bands, citedCount, loading, hoods, onHoods, hidden, onHidden, zoomedOut }: Props) {
   const [open, setOpen] = useState(true);
   const [explain, setExplain] = useState(false);
+  // Opening, folding and explaining change the key's height; it grows and shrinks there instead of jumping.
+  const [box, setBox] = useState<HTMLElement | null>(null);
+  useSmoothSize(box);
   // On a phone the map needs the room; the key starts folded.
   useEffect(() => { if (window.matchMedia("(max-width: 720px)").matches) setOpen(false); }, []);
   // A minor kind waits for the user to zoom in; its row says so instead of counting lines that are not drawn.
@@ -76,7 +80,7 @@ export function Legend({ counts, bands, citedCount, loading, hoods, onHoods, hid
   const solo = (cat: Category) => CATEGORIES.every(c => hidden.has(c.key) === (c.key !== cat));
   const only = (cat: Category) => onHidden(solo(cat) ? new Set() : new Set(CATEGORIES.map(c => c.key).filter(k => k !== cat)));
   return (
-    <section className={`legend${open ? "" : " closed"}${open && explain ? " explaining" : ""}`} aria-label="Map key">
+    <section ref={setBox} className={`legend${open ? "" : " closed"}${open && explain ? " explaining" : ""}`} aria-label="Map key">
       <button type="button" className="legend-head" aria-expanded={open} onClick={() => setOpen(o => !o)}>
         <span>Map key</span>
         <span className="legend-total">{loading ? "Loading" : `${total} in view`}</span>

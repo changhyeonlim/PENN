@@ -4,11 +4,12 @@ import * as maplibregl from "maplibre-gl";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AnswerText, citationOrder } from "@/components/AnswerText";
 import { GuardLine } from "@/components/GuardLine";
+import { usePresence, useSmoothSize } from "@/lib/motion";
 import { Legend } from "@/components/Legend";
 import { PermitPanel } from "@/components/PermitPanel";
 import { ReplayBar } from "@/components/ReplayBar";
 import {
-  activeToday, appNow, askAgent, category, extent, HOOD, isMinor, isOver, MINOR_ZOOM, PARK, isListing, COLOR, daysAway, flagDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, realNow, ROAD, setReplayClock, shortWhen, STRENGTH,
+  activeToday, appNow, askAgent, category, extent, GROUND, HOOD, isMinor, isOver, MINOR_ZOOM, PARK, isListing, COLOR, daysAway, pinDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, realNow, ROAD, setReplayClock, shortWhen, STRENGTH,
   strengthBand, streetCase, tidy, todayStatus, wktToGeometry,
   type AgentReply, type AskContext, type AskTurn, type Busiest, type Category, type Extent, type PennEvent, type View,
 } from "@/lib/api";
@@ -25,12 +26,13 @@ const MAX_CITED_ON_MAP = 30;
 const DATA_LAYERS = ["listings", "full", "lane", "sidewalk", "parking", "points", "points-minor", "cited-line"];
 // Lines by how much of the street they take, heaviest first; a no-parking curb line last.
 const LINE_RANK = (e: PennEvent) => (category(e) === "parking" ? 3 : { full: 0, lane: 1, sidewalk: 2 }[extent(e)]);
-const FLAG_ICON = "penn-flag";
-const TICKET_ICON = "penn-flag-ticketed";
-// The icon is drawn at 2x for sharp edges; 22 x 27 px on the map. Its pole's foot sits 3 px in from the left.
-const FLAG_PX = { w: 44, h: 54, ratio: 2, footX: 3 };
+const PIN_ICON = "penn-pin";
+const TICKET_ICON = "penn-pin-ticketed";
+// The icon is drawn at 2x for sharp edges; 21 x 27 px on the map (the key's 16 x 21, 30% larger, to find and tap).
+// Its tip sits 1.8 px above the bottom edge (the white edge).
+const PIN_PX = { w: 42, h: 54, ratio: 2, tipY: 1.8 };
 const isPointGeom = (e: PennEvent) => /^(MULTI)?POINT/.test(e.geometry_wkt);
-// What a click or hover picks first where things overlap: a flag, then a dot, then lines by severity.
+// What a click or hover picks first where things overlap: a pin, then a dot, then lines by severity.
 // A marker is an explicit target; the street line under it can still be clicked beside it.
 const pickOrder = (e: PennEvent) => (isListing(category(e)) ? 0 : isPointGeom(e) ? 1 : 2 + LINE_RANK(e));
 /** Records on one spot by date: in effect today first, then upcoming soonest first, then ones already
@@ -75,7 +77,9 @@ const hoverWidth = (lo: number, hi: number) =>
   ["interpolate", ["linear"], ["zoom"],
     12, ["case", ["boolean", ["feature-state", "hover"], false], lo + 2, lo],
     17, ["case", ["boolean", ["feature-state", "hover"], false], hi + 3, hi]] as maplibregl.ExpressionSpecification;
-const isLine = ["!=", ["geometry-type"], "Point"] as maplibregl.FilterSpecification;
+// Lines by name, not "not a point": a line layer given an event listed at several places (a MultiPoint) draws its
+// stops joined into one long line.
+const isLine = ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]] as maplibregl.FilterSpecification;
 const isPoint = ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]] as maplibregl.FilterSpecification;
 const ofCat = (c: Category) => ["all", isLine, ["==", ["get", "cat"], c]] as maplibregl.FilterSpecification;
 // A closure line of any reason at one weight (no-parking curb lines have their own layer).
@@ -83,13 +87,13 @@ const ofExtent = (x: Extent) => ["all", isLine, ["!=", ["get", "cat"], "parking"
 // Full strength in effect today, then one step fainter per band of days away (STRENGTH in lib/api.ts).
 const todayOpacity = ["step", ["get", "days"], STRENGTH[0].opacity,
   ...STRENGTH.slice(1).flatMap(s => [s.from, s.opacity])] as unknown as maplibregl.ExpressionSpecification;
-const flagOpacity = ["max", 0.45, todayOpacity] as maplibregl.ExpressionSpecification;
+const pinOpacity = ["max", 0.45, todayOpacity] as maplibregl.ExpressionSpecification;
 // Color says why: construction, an event or a block party (or a no-parking curb).
 const REASON_COLOR = ["match", ["get", "cat"], "event", COLOR.event, "blockparty", COLOR.blockparty,
   "parking", COLOR.parking, COLOR.construction] as maplibregl.ExpressionSpecification;
 // While an answer is open, the records it does not cite turn grey: not fainter, since fainter means "later" on
 // this map, and an uncited closure in effect today must not read as one coming up.
-const OUT_OF_ANSWER = { color: "#9AA3AE", opacity: 0.5, flag: 0.3 };
+const OUT_OF_ANSWER = { color: "#9AA3AE", opacity: 0.5, pin: 0.3 };
 type Expr = maplibregl.ExpressionSpecification;
 // The city layers an answer greys: the paint properties that fade, each one's own opacity, and its own color.
 type PaintProp = Parameters<maplibregl.Map["setPaintProperty"]>[1];   // MapLibre 6 types paint names
@@ -100,7 +104,7 @@ const FOCUS: Focus[] = [
   { id: "full-casing", opacity: ["line-opacity"], base: todayOpacity, casing: true },
   ...["points", "points-minor"].map((id): Focus => ({ id, opacity: ["circle-opacity", "circle-stroke-opacity"], base: todayOpacity,
     color: { prop: "circle-color", value: REASON_COLOR } })),
-  { id: "listings", opacity: ["icon-opacity"], base: flagOpacity },
+  { id: "listings", opacity: ["icon-opacity"], base: pinOpacity },
 ];
 
 /** A preset window: from now, so many days ahead. */
@@ -233,8 +237,15 @@ const isNarrow = () => typeof window !== "undefined" && window.matchMedia("(max-
 const hasRail = () => typeof window !== "undefined" && window.matchMedia("(min-width: 900px)").matches;
 const RAIL_W = 400;     // --rail-w
 const TOPBAR_H = 50;    // --topbar-h
-const REPLAY_H = 120;   // --replay-h: the replay bar under the top card, and its gap
-const KEY_W = 224;      // .legend width
+const REPLAY_H = 128;   // --replay-h: the replay bar under the top card (116), and its 12px gap
+const KEY_W = 264;      // .legend width
+const BOTTOM_H = 94;    // --bar-h on a wide screen: the floating ask box, its gap, and the fine-print line under it
+/** The room the ask box and the fine print take along the bottom (--bar-h, which changes with the width): from
+ *  the ask box's top edge down. Before the page is laid out, the wide-screen value. */
+const bottomRoom = () => {
+  const top = typeof document !== "undefined" ? document.querySelector(".askbar")?.getBoundingClientRect().top : undefined;
+  return top ? window.innerHeight - top : BOTTOM_H;
+};
 
 export default function Page() {
   const mapEl = useRef<HTMLDivElement>(null);
@@ -298,7 +309,24 @@ export default function Page() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [hover, setHover] = useState<{ x: number; y: number; e: PennEvent } | null>(null);
+  // The full disclaimer, sources and privacy note, opened from the fine-print line.
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [narrow, setNarrow] = useState(false);
+  // The top bar's width, for the replay card under it (--topbar-w): one block, its right corners on one edge.
+  // It widens and narrows smoothly as the answer's dates come and go, and the replay card follows it.
+  const [topbarEl, setTopbarEl] = useState<HTMLElement | null>(null);
+  useSmoothSize(topbarEl, { width: true });
+  useEffect(() => {
+    if (!topbarEl) return;
+    const ro = new ResizeObserver(() => document.documentElement.style.setProperty("--topbar-w", `${topbarEl.offsetWidth}px`));
+    ro.observe(topbarEl);
+    return () => ro.disconnect();
+  }, [topbarEl]);
+  // The answer grows as it arrives and folds when hidden; the About card and the replay card fade out, not off.
+  const [sheetEl, setSheetEl] = useState<HTMLElement | null>(null);
+  useSmoothSize(sheetEl);
+  const about = usePresence(aboutOpen);
+  const replayCard = usePresence(win === "replay");
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 720px)");
     const on = () => setNarrow(mq.matches);
@@ -336,16 +364,19 @@ export default function Page() {
   const padding = useCallback((expectSheet = false): maplibregl.PaddingOptions => {
     const narrow = isNarrow();
     if (hasRail()) {
-      // The answer is a column on the left and the key stands in the bottom right, so the place goes between.
+      // The answer is a column on the left, the key stands in the bottom right and the ask box floats between
+      // them along the bottom, so the place goes above the ask box, between the two.
       const panel = panelOpenRef.current ? 380 : 0;
-      return { top: 12 + TOPBAR_H + 24 + (winRef.current === "replay" ? REPLAY_H : 0), bottom: 24,
+      return { top: 12 + TOPBAR_H + 24 + (winRef.current === "replay" ? REPLAY_H : 0), bottom: bottomRoom() + 16,
         left: expectSheet || sheetUpRef.current ? 12 + RAIL_W + 32 : 48,
         right: panel ? panel + 40 : 12 + KEY_W + 36 };
     }
-    // The map ends at the ask banner; the answer sheet and legend sit over its bottom edge. While an
-    // answer loads, its sheet is still short, so plan for the height it will grow to (see .sheet max-height).
+    // The map runs to the bottom edge; the answer sheet, legend, ask box and fine print sit over it, from the
+    // top of the dock down. While an answer loads, its sheet is still short, so plan for the height it will grow
+    // to (see .sheet max-height), over the ask box and fine print.
     const grown = expectSheet ? (narrow ? 0.48 * window.innerHeight : Math.min(0.46 * window.innerHeight, 460)) : 0;
-    const dock = Math.max(dockRef.current?.getBoundingClientRect().height ?? 0, grown);
+    const top = dockRef.current?.getBoundingClientRect().top ?? window.innerHeight;
+    const dock = Math.max(window.innerHeight - top, grown + bottomRoom());
     const panel = panelOpenRef.current && !narrow ? 380 : 0;
     const replay = winRef.current === "replay" ? REPLAY_H : 0;
     return { top: (narrow ? 64 : 100) + replay, left: narrow ? 20 : 48, right: panel + (narrow ? 20 : 64), bottom: dock + 20 };
@@ -363,7 +394,7 @@ export default function Page() {
   // Matched pairs, both ways: a Ticketmaster event's visitphilly pick, and a pick's Ticketmaster dates.
   const pickOf = useRef(new Map<string, string>());
   const salesOf = useRef(new Map<string, string[]>());
-  // One show at one venue on several dates is one flag: every date's record maps to the whole run, and only
+  // One show at one venue on several dates is one pin: every date's record maps to the whole run, and only
   // its lead (the next date still to come) is drawn and counted.
   const seriesOf = useRef(new Map<string, PennEvent[]>());
   const leads = useRef(new Set<string>());
@@ -376,7 +407,7 @@ export default function Page() {
   }, []);
 
   /** What the map draws: switched-off categories left out, and a visitphilly pick that Ticketmaster also lists
-   *  folded into the Ticketmaster flag (unless ticketed events are switched off, when the pick shows alone). */
+   *  folded into the Ticketmaster pin (unless ticketed events are switched off, when the pick shows alone). */
   const drawn = useCallback(() => cityEvents.current.filter(e => !hiddenRef.current.has(category(e)) && !folded(e)
     && onMap(e)), [folded, onMap]);
 
@@ -410,7 +441,7 @@ export default function Page() {
     const b = m.getBounds();
     const out = m.getZoom() < MINOR_ZOOM;
     setZoomedOut(out);
-    // A pick folded into its Ticketmaster flag, or a show's later dates, are not counted again; switched-off
+    // A pick folded into its Ticketmaster pin, or a show's later dates, are not counted again; switched-off
     // rows keep their counts. Zoomed out, the key counts only what is drawn: no minor lines.
     setEvents(cityEvents.current.filter(e => e.centroid_lon != null && e.centroid_lat != null && !folded(e)
       && onMap(e) && !(out && isMinor(e)) && b.contains([e.centroid_lon, e.centroid_lat])));
@@ -487,7 +518,7 @@ export default function Page() {
     if (!mapEl.current || map.current) return;
     const m = new maplibregl.Map({
       container: mapEl.current, style: STYLE, bounds: CENTER_CITY,
-      fitBoundsOptions: { padding: { top: 60, bottom: 90, left: 20, right: 20 } },
+      fitBoundsOptions: { padding: { top: 60, bottom: BOTTOM_H + 16, left: 20, right: 20 } },
       minZoom: 10, maxZoom: 19, attributionControl: false,
     });
     map.current = m;
@@ -500,16 +531,24 @@ export default function Page() {
       m.addSource("events", { type: "geojson", data: empty, promoteId: "event_id" });
       m.addSource("cited", { type: "geojson", data: empty });
       m.addSource("selected", { type: "geojson", data: empty });
-      const flag = new Image(FLAG_PX.w, FLAG_PX.h);
-      flag.onload = () => { if (!m.hasImage(FLAG_ICON)) m.addImage(FLAG_ICON, flag, { pixelRatio: FLAG_PX.ratio }); };
-      flag.src = flagDataUrl(FLAG_PX.w, FLAG_PX.h);
-      const ticket = new Image(FLAG_PX.w, FLAG_PX.h);
-      ticket.onload = () => { if (!m.hasImage(TICKET_ICON)) m.addImage(TICKET_ICON, ticket, { pixelRatio: FLAG_PX.ratio }); };
-      ticket.src = flagDataUrl(FLAG_PX.w, FLAG_PX.h, "ticketed");
+      const pin = new Image(PIN_PX.w, PIN_PX.h);
+      pin.onload = () => { if (!m.hasImage(PIN_ICON)) m.addImage(PIN_ICON, pin, { pixelRatio: PIN_PX.ratio }); };
+      pin.src = pinDataUrl(PIN_PX.w, PIN_PX.h);
+      const ticket = new Image(PIN_PX.w, PIN_PX.h);
+      ticket.onload = () => { if (!m.hasImage(TICKET_ICON)) m.addImage(TICKET_ICON, ticket, { pixelRatio: PIN_PX.ratio }); };
+      ticket.src = pinDataUrl(PIN_PX.w, PIN_PX.h, "ticketed");
       // Under the basemap's labels, so street names stay readable on top of the permits.
       const below = m.getStyle().layers.find(l => l.type === "symbol")?.id;
       const add = (l: maplibregl.LayerSpecification) => m.addLayer(l, below);
       const round = { "line-cap": "round", "line-join": "round" } as const;
+      // The ground: limestone land, buildings a step darker, blue-green rivers (see GROUND in lib/api.ts).
+      const fill = (id: string, prop: PaintProp, v: string) => { if (m.getLayer(id)) m.setPaintProperty(id, prop, v); };
+      fill("background", "background-color", GROUND.land);
+      fill("landuse_residential", "fill-color", GROUND.land);
+      fill("building", "fill-color", GROUND.building);
+      fill("building", "fill-outline-color", GROUND.buildingEdge);
+      fill("water", "fill-color", GROUND.water);
+      fill("waterway", "line-color", GROUND.waterway);
       // Positron draws every road near-white; give highways and major streets their own look.
       const paint = (id: string, v: string) => { if (m.getLayer(id)) m.setPaintProperty(id, "line-color", v); };
       ["highway_motorway_inner", "highway_motorway_bridge_inner", "tunnel_motorway_inner"].forEach(id => paint(id, ROAD.highway));
@@ -535,9 +574,9 @@ export default function Page() {
         const f = m.getLayer(id) && m.getFilter(id);
         if (f) m.setFilter(id, ["all", f, ["!=", ["get", "brunnel"], "tunnel"]] as maplibregl.FilterSpecification);
       });
-      // Parks, squares, fields and woods olive inside the city only. Positron draws parks first, right over its background; an
-      // olive copy of its woods goes there too (the original, drawn later, is hidden), then the city mask: the
-      // background color everywhere past the city line, over the olive and under water, roads and labels.
+      // Parks, squares, fields and woods sage inside the city only. Positron draws parks first, right over its background; a
+      // sage copy of its woods goes there too (the original, drawn later, is hidden), then the city mask: the
+      // background color everywhere past the city line, over the sage and under water, roads and labels.
       if (m.getLayer("park")) m.setPaintProperty("park", "fill-color", PARK.park);
       const wood = m.getStyle().layers.find(l => l.id === "landcover_wood") as maplibregl.FillLayerSpecification | undefined;
       const firstAbovePark = m.getLayer("water") ? "water" : undefined;
@@ -545,7 +584,7 @@ export default function Page() {
         m.addLayer({ ...wood, id: "wood-city", paint: { ...wood.paint, "fill-color": PARK.wood } }, firstAbovePark);
         m.setLayoutProperty("landcover_wood", "visibility", "none");
       }
-      // Green spaces Positron never draws, in the same olive as parks: squares and lawns are grass landcover
+      // Green spaces Positron never draws, in the same sage as parks: squares and lawns are grass landcover
       // (Washington Square is grass/park there, not in the park layer), and ballfields, playgrounds and running
       // tracks are landuse.
       const tiles = wood?.source ?? "openmaptiles";
@@ -555,7 +594,7 @@ export default function Page() {
         filter: ["in", ["get", "class"], ["literal", ["pitch", "playground", "track"]]], paint: { "fill-color": PARK.park } }, firstAbovePark);
       m.addSource("city-mask", { type: "geojson", data: CITY_MASK_URL });
       m.addLayer({ id: "city-mask", type: "fill", source: "city-mask",
-        paint: { "fill-color": (m.getLayer("background") && m.getPaintProperty("background", "background-color") as string) || "rgb(242,243,240)" } },
+        paint: { "fill-color": GROUND.land } },
         firstAbovePark);
 
       // Neighborhoods under everything else of ours: a soft slate band (no dashes, so it never reads as a permit),
@@ -571,9 +610,9 @@ export default function Page() {
         paint: { "line-color": SIGN, "line-width": zoomWidth(2.5, 4.5), "line-opacity": 0.9 } });
 
       // The answer's records: a highlighter stroke under the street, then the record's own line.
-      add({ id: "cited-glow", type: "line", source: "cited", layout: round,
+      add({ id: "cited-glow", type: "line", source: "cited", filter: isLine, layout: round,
         paint: { "line-color": HIGHLIGHT, "line-width": zoomWidth(12, 30), "line-opacity": 0.85, "line-blur": 1 } });
-      add({ id: "selected-halo", type: "line", source: "selected", layout: round,
+      add({ id: "selected-halo", type: "line", source: "selected", filter: isLine, layout: round,
         paint: { "line-color": "#1B2433", "line-width": zoomWidth(9, 18), "line-opacity": 0.9 } });
       // Color says why (REASON_COLOR), weight says how much of the street: dots for the sidewalk, a thin line for one
       // lane, a thick white-edged line for the full street. Lightest first, so a full closure draws over a sidewalk
@@ -629,16 +668,16 @@ export default function Page() {
           "text-size": zoomWidth(10, 12.5), "text-max-width": 9, "text-letter-spacing": 0.16, "text-line-height": 1.3 },
         paint: { "text-color": HOOD.label, "text-halo-color": "rgba(255,255,255,0.9)", "text-halo-width": 1.5 } });
 
-      // Listings (visitphilly): flags over everything, street names included, so a flag on a closed street
-      // stays visible and clickable. Under each flag's foot, a highlighter dot when cited and a ring when open.
+      // Listings (visitphilly, Ticketmaster): pins over everything, street names included, so a pin on a closed
+      // street stays visible and clickable. Under each pin's tip, a highlighter dot when cited and a ring when open.
       m.addLayer({ id: "cited-point", type: "circle", source: "cited", filter: isPoint,
         paint: { "circle-color": HIGHLIGHT, "circle-radius": zoomWidth(9, 14), "circle-opacity": 0.85, "circle-blur": 0.2 } });
       m.addLayer({ id: "selected-point", type: "circle", source: "selected", filter: isPoint,
         paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": zoomWidth(8, 12), "circle-stroke-color": "#1B2433", "circle-stroke-width": 2.5 } });
       m.addLayer({ id: "listings", type: "symbol", source: "events", filter: ["in", ["get", "cat"], ["literal", ["listing", "ticketed"]]],
-        layout: { "icon-image": ["match", ["get", "cat"], "ticketed", TICKET_ICON, FLAG_ICON], "icon-anchor": "bottom-left", "icon-offset": [-FLAG_PX.footX, 0],
+        layout: { "icon-image": ["match", ["get", "cat"], "ticketed", TICKET_ICON, PIN_ICON], "icon-anchor": "bottom", "icon-offset": [0, PIN_PX.tipY],
           "icon-allow-overlap": true, "icon-ignore-placement": true, "symbol-sort-key": ["-", 0, ["get", "days"]] },   // today's on top
-        paint: { "icon-opacity": flagOpacity } });
+        paint: { "icon-opacity": pinOpacity } });
       showHoodsOn(m, showHoodsRef.current);
       focusOn(m, focusRef.current);
       markPlace(m, placePointRef.current);
@@ -666,7 +705,7 @@ export default function Page() {
         const e = known.current.get(id);
         return e ? [e] : [];
       }).sort((a, b) => pickOrder(a) - pickOrder(b) || byWhen(a, b));
-      // On a flag or dot, only the markers under the cursor count: the street line beneath is not what was aimed at.
+      // On a pin or dot, only the markers under the cursor count: the street line beneath is not what was aimed at.
       return found.length && pickOrder(found[0]) < 2 ? found.filter(e => pickOrder(e) < 2) : found;
     };
 
@@ -774,7 +813,8 @@ export default function Page() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (picking) setPicking(false);
+        if (aboutOpen) setAboutOpen(false);
+        else if (picking) setPicking(false);
         else if (panelOpenRef.current) closePanel();
       } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
         e.preventDefault();
@@ -783,7 +823,7 @@ export default function Page() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [picking, closePanel]);
+  }, [aboutOpen, picking, closePanel]);
 
   // ---- asking ----
   async function showCited(ids: string[], fitIfNoPlace: boolean, extra: maplibregl.LngLatBounds | null = null) {
@@ -930,7 +970,7 @@ export default function Page() {
     <main className={`app${panelOpen ? " panel-open" : ""}${picking ? " picking" : ""}${win === "replay" ? " replaying" : ""}`}>
       <div className="map" ref={mapEl} role="region" aria-label="Map of Philadelphia street permits" />
 
-      <header className="topbar">
+      <header className="topbar" ref={setTopbarEl}>
         <div className="brand">
           <span className="wordmark">PENN</span>
           <span className="tagline">Philadelphia Events and Neighborhood Navigator</span>
@@ -958,12 +998,12 @@ export default function Page() {
         <FreshLine loaded={loaded} />
       </header>
 
-      {win === "replay" && (() => {
+      {replayCard && (() => {
         const { start, end } = replaySpan();
         // Until the month's records are in, the bar stands on the busiest day, waiting.
         const at = replayAt ?? (busyDays?.busiest ? phillyMidnight(busyDays.busiest) : start);
         return (
-          <ReplayBar start={start} end={end} step={REPLAY_STEP} days={busyDays?.days ?? []} busiest={busyDays?.busiest ?? null}
+          <ReplayBar leaving={replayCard === "out"} start={start} end={end} step={REPLAY_STEP} days={busyDays?.days ?? []} busiest={busyDays?.busiest ?? null}
             at={at} loading={replayAt === null} onAt={setReplayAt} playing={playing} onPlay={setPlaying}
             inEffect={busyDuring(cityEvents.current, at)}
             onBusiest={() => { setPlaying(false); if (busyDays?.busiest) setReplayAt(peakStep(cityEvents.current, busyDays.busiest)); }} />
@@ -986,7 +1026,7 @@ export default function Page() {
       <div className="dock">
         <div className="dock-row" ref={dockRef}>
           {hasSheet && (
-            <section className={`sheet${sheetOpen ? "" : " collapsed"}`} aria-live="polite" aria-busy={busy}>
+            <section ref={setSheetEl} className={`sheet${sheetOpen ? "" : " collapsed"}`} aria-live="polite" aria-busy={busy}>
               <div className="sheet-head">
                 {place?.name ? <span className="plate">{place.name}</span>
                   : busy ? <span className="plate pending">Finding the place</span> : null}
@@ -1028,65 +1068,54 @@ export default function Page() {
           <Legend counts={counts} bands={bands} citedCount={citedIds.length} hoods={showHoods} onHoods={setShowHoods}
             hidden={hiddenCats} onHidden={setHiddenCats} zoomedOut={zoomedOut}
             loading={mapLoading && !events.length} />
-        </div>
-
-        <form className="askbar" onSubmit={e => { e.preventDefault(); if (!busy) submit(); }}>
-          <label htmlFor="q" className="sr-only">Ask PENN about a street or corner</label>
-          {pin ? (
-            <span className="pin-chip">
-              Pinned point
-              <button type="button" aria-label="Clear the pinned point" onClick={() => { setPin(null); forget(); }}>
-                <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6m0-6L2 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-              </button>
-            </span>
-          ) : (
-            <button type="button" className={`pick-btn${picking ? " on" : ""}`} aria-pressed={picking}
-              title="Pick a point on the map" aria-label="Pick a point on the map" onClick={() => setPicking(p => !p)}>
-              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M9 16s5-4.6 5-8.6A5 5 0 0 0 4 7.4C4 11.4 9 16 9 16z" fill="none" stroke="currentColor" strokeWidth="1.6" /><circle cx="9" cy="7.4" r="1.8" fill="currentColor" /></svg>
-              <span className="pick-label" aria-hidden="true">{picking ? "Click the map" : "Pick on map"}</span>
-            </button>
-          )}
-          <div className="ask-field">
-            <input id="q" ref={inputRef} value={question} onChange={e => { sentAt.current = -1; setQuestion(e.target.value); }}
-              onKeyDown={recall} autoComplete="off"
-              placeholder={pin ? "Ask about the pinned point" : narrow ? "Ask about streets, events or closures" : ""} />
-            {/* The empty box's hint, with its example rolling up to the next every few seconds: a placeholder
-                attribute can't animate, so this sits over the input and lets clicks through. */}
-            {rolling && (
-              <span className="ask-hint" aria-hidden="true">
-                Ask about streets, events or closures, like{" "}
-                <span className="roll">
-                  <span key={turn} className={turn ? "roll-in" : undefined}>{EXAMPLES[turn % EXAMPLES.length]}</span>
-                  {turn > 0 && <span key={`out-${turn}`} className="roll-out">{EXAMPLES[(turn - 1) % EXAMPLES.length]}</span>}
-                </span>
+          {/* The ask box floats between the answer and the key (on desktop), or under them. */}
+          <form className="askbar" onSubmit={e => { e.preventDefault(); if (!busy) submit(); }}>
+            <label htmlFor="q" className="sr-only">Ask PENN about a street or corner</label>
+            {pin ? (
+              <span className="pin-chip">
+                Pinned point
+                <button type="button" aria-label="Clear the pinned point" onClick={() => { setPin(null); forget(); }}>
+                  <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6m0-6L2 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+                </button>
               </span>
+            ) : (
+              <button type="button" className={`pick-btn${picking ? " on" : ""}`} aria-pressed={picking}
+                title="Pick a point on the map" aria-label="Pick a point on the map" onClick={() => setPicking(p => !p)}>
+                <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M9 16s5-4.6 5-8.6A5 5 0 0 0 4 7.4C4 11.4 9 16 9 16z" fill="none" stroke="currentColor" strokeWidth="1.6" /><circle cx="9" cy="7.4" r="1.8" fill="currentColor" /></svg>
+                <span className="pick-label" aria-hidden="true">{picking ? "Click the map" : "Pick on map"}</span>
+              </button>
             )}
-          </div>
-          <button type="submit" className="ask-btn" disabled={!question.trim() || busy}>{busy ? "Asking" : "Ask"}</button>
-        </form>
-        {/* Two rows: what the data is and where it comes from, then privacy and the map credits. */}
+            <div className="ask-field">
+              <input id="q" ref={inputRef} value={question} onChange={e => { sentAt.current = -1; setQuestion(e.target.value); }}
+                onKeyDown={recall} autoComplete="off"
+                placeholder={pin ? "Ask about the pinned point" : narrow ? "Ask about streets, events or closures" : ""} />
+              {/* The empty box's hint, with its example rolling up to the next every few seconds: a placeholder
+                  attribute can't animate, so this sits over the input and lets clicks through. */}
+              {rolling && (
+                <span className="ask-hint" aria-hidden="true">
+                  Ask about streets, events or closures, like{" "}
+                  <span className="roll">
+                    <span key={turn} className={turn ? "roll-in" : undefined}>{EXAMPLES[turn % EXAMPLES.length]}</span>
+                    {turn > 0 && <span key={`out-${turn}`} className="roll-out">{EXAMPLES[(turn - 1) % EXAMPLES.length]}</span>}
+                  </span>
+                </span>
+              )}
+            </div>
+            <button type="submit" className="ask-btn" disabled={!question.trim() || busy}>{busy ? "Asking" : "Ask"}</button>
+          </form>
+        </div>
+        {/* One line: the demo's date, what PENN is not, and the map credits, which must stay visible. The full
+            disclaimer, the sources and the privacy note open from "About, sources and privacy". */}
         <div className="fine-print">
           <p className="fine-row">
-            <span className="fine-give" title={"Not an official City of Philadelphia source. Data is shown as published "
-              + "and may be incomplete or out of date; check the linked record. Sources: City of Philadelphia street "
-              + "permits and event-closure notices, race organizers, visitphilly.com and Ticketmaster listings, and "
-              + "web pages found with Tavily search when PENN has no record."}>
-              {PINNED_NOW && <strong className="fine-demo">Demo snapshot: data as of {demoStamp(PINNED_NOW)}. </strong>}
-              Not an official City of Philadelphia source. Data may be incomplete or out of date; check the linked
-              record. Sources: <a href="https://opendataphilly.org/datasets/street-lane-closures/"
-              target="_blank" rel="noopener">City of Philadelphia</a> permits and closure notices, race
-              organizers, <a href="https://www.visitphilly.com/" target="_blank" rel="noopener">visitphilly.com</a>,{" "}
-              <a href="https://www.ticketmaster.com/" target="_blank" rel="noopener">Ticketmaster</a>, web pages
-              found with <a href="https://www.tavily.com/" target="_blank" rel="noopener">Tavily</a>.
-            </span>
-          </p>
-          <p className="fine-row">
-            {/* Tavily may keep and use the search terms it receives (its terms 6.5, 9.2); penn/web/tavily.py
-                sends only a short query or an event name and year, never the question itself. */}
-            <span className="fine-give fine-privacy" title={"PENN sets no cookies and shows no ads. Questions you ask are sent "
-              + "to NVIDIA Nemotron on Nebius to answer them. When PENN has no record, a short web search (an event's name "
-              + "and year, or a few words on what you asked, never your question itself) is sent to Tavily, which may keep it."}>
-              Privacy: no cookies, no ads; questions go to NVIDIA Nemotron on Nebius, short web searches to Tavily.
+            <span className="fine-give">
+              {/* On a phone the line keeps the date and "About" (.fine-long drops the rest). */}
+              {PINNED_NOW && <strong className="fine-demo">Demo snapshot:<span className="fine-long"> data as of</span>{" "}
+                {demoStamp(PINNED_NOW)}</strong>}
+              <span className="fine-note">Not an official City of Philadelphia source.</span>{" "}
+              <button type="button" className="fine-about" aria-expanded={aboutOpen} aria-controls="about"
+                aria-label="About, sources and privacy" onClick={() => setAboutOpen(o => !o)}>
+                About<span className="fine-long">, sources and privacy</span></button>
             </span>
             {/* Map credits. OpenStreetMap asks for visible credit; the neighborhood outlines are CC BY 4.0,
                 which requires naming their author. */}
@@ -1100,6 +1129,31 @@ export default function Page() {
             </span>
           </p>
         </div>
+        {about && (
+          <section id="about" className={`about${about === "out" ? " leaving" : ""}`} role="dialog" aria-labelledby="about-title">
+            <div className="about-head">
+              <h2 id="about-title">About PENN</h2>
+              <button type="button" className="icon-btn" aria-label="Close" onClick={() => setAboutOpen(false)}>
+                <svg width="12" height="12" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6m0-6L2 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+              </button>
+            </div>
+            <p><strong>Not an official City of Philadelphia source.</strong> Data is shown as published and may be
+              incomplete or out of date; check the linked record.</p>
+            <h3>Sources</h3>
+            <p><a href="https://opendataphilly.org/datasets/street-lane-closures/" target="_blank" rel="noopener">City
+              of Philadelphia</a> street permits and event-closure notices, race organizers, <a
+              href="https://www.visitphilly.com/" target="_blank" rel="noopener">visitphilly.com</a> and <a
+              href="https://www.ticketmaster.com/" target="_blank" rel="noopener">Ticketmaster</a> listings, and web
+              pages found with <a href="https://www.tavily.com/" target="_blank" rel="noopener">Tavily</a> search
+              when PENN has no record.</p>
+            <h3>Privacy</h3>
+            {/* Tavily may keep and use the search terms it receives (its terms 6.5, 9.2); penn/web/tavily.py
+                sends only a short query or an event name and year, never the question itself. */}
+            <p>PENN sets no cookies and shows no ads. Questions you ask are sent to NVIDIA Nemotron on Nebius to
+              answer them. When PENN has no record, a short web search (an event&apos;s name and year, or a few
+              words on what you asked, never your question itself) is sent to Tavily, which may keep it.</p>
+          </section>
+        )}
       </div>
     </main>
   );
@@ -1116,8 +1170,8 @@ function focusOn(m: maplibregl.Map, cited: string[] | null) {
   const keep = cited?.length ? ["in", ["get", "event_id"], ["literal", cited]] as Expr : null;
   FOCUS.forEach(({ id, opacity, base, color, casing }) => {
     if (!m.getLayer(id)) return;
-    // A white casing under a grey line would read as a road, so it goes; flags can't turn grey, so they recede.
-    const out = casing ? 0 : id === "listings" ? OUT_OF_ANSWER.flag : OUT_OF_ANSWER.opacity;
+    // A white casing under a grey line would read as a road, so it goes; pins stay ink, so they recede.
+    const out = casing ? 0 : id === "listings" ? OUT_OF_ANSWER.pin : OUT_OF_ANSWER.opacity;
     const o = (keep ? ["case", keep, base, out] : base) as Expr;
     opacity.forEach(p => m.setPaintProperty(id, p, o));
     if (color) m.setPaintProperty(id, color.prop, keep ? ["case", keep, color.value, OUT_OF_ANSWER.color] as Expr : color.value);
