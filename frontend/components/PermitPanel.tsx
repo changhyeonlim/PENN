@@ -12,6 +12,8 @@ type Props = {
   loading: boolean;
   error: string;
   citedNumber: (id: string) => number;
+  /** The answer's citations the list came from ("6–16"), or null when it is the records under one click. */
+  range: [number, number] | null;
   /** The same event's other listings (a visitphilly pick and its Ticketmaster dates). */
   partnersOf: (e: PennEvent) => PennEvent[];
   /** Every date of the same show at the same venue (just the event itself when it has one). */
@@ -21,7 +23,7 @@ type Props = {
   onClose: () => void;
 };
 
-export function PermitPanel({ open, choices, event, loading, error, citedNumber, partnersOf, datesOf, onPick, onBack, onClose }: Props) {
+export function PermitPanel({ open, choices, event, loading, error, citedNumber, range, partnersOf, datesOf, onPick, onBack, onClose }: Props) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   // A closed panel stays in the DOM for its slide; inert keeps it out of the tab order.
@@ -32,8 +34,9 @@ export function PermitPanel({ open, choices, event, loading, error, citedNumber,
     <aside ref={panelRef} className={`panel${open ? " open" : ""}`} aria-label="Permit details">
       <div className="panel-bar">
         {onBack && event
-          ? <button type="button" className="text-btn" onClick={onBack}>All {choices.length} here</button>
-          : <span className="panel-kicker">{event ? (isListing(category(event)) ? "Event" : "Permit") : `${choices.length} records on this spot`}</span>}
+          ? <button type="button" className="text-btn" onClick={onBack}>All {choices.length} {range ? "cited" : "here"}</button>
+          : <span className="panel-kicker">{event ? (isListing(category(event)) ? "Event" : "Permit")
+            : range ? `Records ${range[0]}–${range[1]} in the answer` : `${choices.length} records on this spot`}</span>}
         <button ref={closeRef} type="button" className="icon-btn" aria-label="Close details (Esc)" onClick={onClose}>
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9m0-9l-9 9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
         </button>

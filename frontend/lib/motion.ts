@@ -46,3 +46,14 @@ export function usePresence(show: boolean): "in" | "out" | null {
   }, [show]);
   return state;
 }
+
+/** One soft yellow glow out of each element: the answer's citation numbers, as the map's stroke ends, so the
+ *  numbers and the streets they cite are seen to belong together. */
+export function glow(els: Iterable<Element>) {
+  if (still()) return;
+  for (const el of els) {
+    (el as HTMLElement).animate(
+      [{ boxShadow: "0 0 0 0 rgba(255, 212, 59, .75)" }, { boxShadow: "0 0 0 7px rgba(255, 212, 59, 0)" }],
+      { duration: 700, easing: "ease-out" });
+  }
+}

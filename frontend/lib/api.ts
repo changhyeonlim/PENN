@@ -25,6 +25,7 @@ export type AgentReply = {
   context?: AskContext;
   place?: string | null; window?: string | null; window_kind?: "before_records" | "past" | "current" | "future" | null;
   start?: string; end?: string; view?: View | null; model?: string | null; tools?: string[]; cited?: string[];
+  nearby?: string[];             // what the place search found at the place and the answer did not cite: lit too
   web?: { id: string; title: string; url: string; site: string }[];   // web pages the answer cites (p5-09)
   landmarks?: { name: string; point: [number, number]; bounds: [[number, number], [number, number]] }[];   // p3-10
   guard?: Guard | null;          // what the checks vouch for; null when there is no answer
@@ -278,6 +279,53 @@ export function daysAway(e: PennEvent, now = appNow(), until = appUntil()): numb
 }
 
 const plural = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
+
+const WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+const count = (n: number, one: string, many: string) => `${n < 10 ? WORDS[n] : n} ${n === 1 ? one : many}`;
+/** An event closure's event: "Philadelphia Marathon" of "Philadelphia Marathon: Benjamin Franklin Parkway". */
+const eventName = (e: PennEvent) => tidy(e.title.split(":")[0]);
+
+/** The answer's headline, from the records it cites, never from its prose: what is in effect during the answer's
+ *  dates, biggest first, at most two kinds ("Two block parties", "Five street closures and three events").
+ *  A record from outside those dates (a past year's closure cited as a pattern) does not count, so an answer
+ *  that found nothing reads "Nothing on record". With no dates asked and one named event cited (its closures
+ *  across past years), the headline is the event's name. An event's closure segments count once. */
+export function answerHeadline(cited: PennEvent[], start?: string | null, end?: string | null): string {
+  const first = start ? start.slice(0, 10) : null;
+  const last = end ? todayISO(new Date(Date.parse(end) - 1)) : null;   // the window ends at a midnight it excludes
+  const live = cited.filter(e => {
+    if (!first || !last) return true;
+    const s = e.start_ts ? localISO(e.start_ts) : e.start_date?.slice(0, 10);
+    const t = e.end_ts ? localISO(e.end_ts) : e.open_ended ? "9999-12-31" : (e.end_date ?? e.start_date)?.slice(0, 10) ?? s;
+    return !!s && s <= last && (t ?? s) >= first;
+  });
+  if (!live.length) return "Nothing on record";
+  const names = new Set(live.filter(e => category(e) === "event").map(eventName));
+  if (!first && names.size === 1 && live.every(e => category(e) === "event")) return [...names][0];
+  const seen = new Set<string>(), kinds = new Set<string>();
+  let closures = 0, events = 0, lanes = 0, walks = 0, parking = 0;
+  for (const e of live) {
+    const c = category(e);
+    if (isListing(c)) events++;
+    else if (c === "event") { if (!seen.has(eventName(e))) { seen.add(eventName(e)); closures++; kinds.add("event"); } }
+    else if (c === "parking") parking++;
+    else if (extent(e) === "sidewalk") walks++;
+    else if (extent(e) === "lane") lanes++;
+    else { closures++; kinds.add(c === "blockparty" ? "blockparty" : "work"); }
+  }
+  const only = (k: string) => kinds.size === 1 && kinds.has(k);
+  const closure: [string, string] = only("blockparty") ? ["block party", "block parties"]
+    : only("event") ? ["event closure", "event closures"] : ["street closure", "street closures"];
+  // What it does to the street leads, biggest first; events come second ("One lane closure and two events"),
+  // then the next kind of street work when there are none.
+  const street: [number, string, string][] = [[closures, ...closure], [lanes, "lane closure", "lane closures"],
+    [walks, "sidewalk closure", "sidewalk closures"], [parking, "no-parking zone", "no-parking zones"]];
+  const work = street.filter(([n]) => n);
+  const happening: [number, string, string][] = events ? [[events, "event", "events"]] : [];
+  const line = [...work.slice(0, 1), ...happening, ...work.slice(1)].slice(0, 2)
+    .map(([n, one, many]) => count(n, one, many)).join(" and ");
+  return line.charAt(0).toUpperCase() + line.slice(1);
+}
 
 export function todayStatus(e: PennEvent, now = appNow(), until = appUntil()): string {
   if (e.start_ts && !e.end_ts && activeToday(e, now, until)) {

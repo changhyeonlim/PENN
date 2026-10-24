@@ -66,7 +66,13 @@ button { cursor: pointer; }
   background: var(--surface); border-radius: var(--r-card); padding: 0 14px 0 14px; box-shadow: var(--flat);
 }
 .brand { display: flex; align-items: baseline; gap: 10px; }
-.wordmark { font: 700 26px/1 var(--display); letter-spacing: .02em; }
+.brand { align-items: center; }
+/* PENN on the same green street sign as the place an answer is about: the brand and the subject are one object. */
+.wordmark {
+  font: 700 20px/1 var(--display); letter-spacing: .06em; color: #fff; background: var(--sign);
+  padding: 5px 9px 4px; border-radius: var(--r-chip);
+  box-shadow: inset 0 0 0 2px var(--sign), inset 0 0 0 3.5px rgba(255, 255, 255, .9);
+}
 .tagline { font-size: 13px; color: var(--muted); }
 .fresh { margin: 0; font-size: 12px; color: var(--muted); white-space: nowrap; cursor: help;
   text-decoration: underline dotted #B8BEC7; text-underline-offset: 3px; }
@@ -226,28 +232,34 @@ button { cursor: pointer; }
   .dock-row:has(> .sheet) { padding-left: calc(12px + var(--rail-w) + 12px); }
   .sheet { transition: top var(--dur) var(--ease), max-height var(--dur) var(--ease); }   /* making room for Replay */
 }
-.sheet-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px 8px; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
-.sheet.collapsed .sheet-head { border-bottom: 0; }
-.sheet-when { font-size: 14px; color: var(--muted); flex: 1 1 auto; min-width: 0; }
-.sheet-toggle { margin-left: auto; font-size: 13px; color: var(--muted); }
+/* The answer card, top down: the place's sign with New topic and Hide beside it; the headline (answerHeadline in
+   lib/api.ts) in the sign's condensed face; what was asked and for when; the answer under a rule; the guard
+   closing it under another. Folded, the sign and the headline stay. */
+.sheet-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 18px 0; flex: none; }
+.sheet-head .plate { font-size: 21px; padding: 6px 12px 5px; box-shadow: inset 0 0 0 2px var(--sign), inset 0 0 0 4px rgba(255, 255, 255, .9); }
+.sheet-acts { display: flex; gap: 14px; padding-top: 6px; flex: none; }
+.sheet-acts .text-btn { font-size: 13px; color: var(--muted); text-decoration: none; }
+.sheet-acts .text-btn:hover { color: var(--ink); text-decoration: underline; }
+.headline { margin: 14px 18px 2px; font: 600 30px/1.05 var(--display); letter-spacing: .005em; flex: none; }
+.sheet.collapsed .headline { margin-bottom: 16px; }
+.sheet.collapsed .sheet-head { padding-bottom: 16px; }
+.sheet.collapsed .sheet-head:has(+ .headline) { padding-bottom: 0; }
+.sheet-ctx { margin: 0 18px 14px; font-size: 13px; color: var(--muted); flex: none; }
+.sheet-head + .sheet-ctx { margin-top: 10px; }   /* no headline yet: under the sign */
 /* Cards that scroll take a thin bar on a clear track, inside their rounded corners. */
 .sheet-body, .legend, .about, .detail, .choices { scrollbar-width: thin; scrollbar-color: rgba(27, 36, 51, .28) transparent; }
-.sheet-body { overflow-y: auto; padding: 10px 16px 14px; overscroll-behavior: contain; }
-.asked { margin: 0 0 8px; font-weight: 700; }
-.kind-note { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
-.sheet-msg { margin: 4px 0; }
+.sheet-body { overflow-y: auto; padding: 14px 18px 4px; border-top: 1px solid var(--rule); line-height: 1.55; overscroll-behavior: contain; }
+.sheet-msg { margin: 0 0 10px; }
 .sheet-msg p { margin: 0 0 6px; max-width: 72ch; }
-.sheet-error { margin: 4px 0; color: #7A0A1C; }
-.sheet-foot { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
-/* the hallucination guard under an answer: its mark and count green like the place sign, since it vouches for the
-   answer. No side stripe: on a rounded box a one-sided border bends round the corners. */
-.guard { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0 0; padding: 8px 10px;
-  background: var(--wash); border: 1px solid var(--rule); border-radius: var(--r-ctl);
-  font-size: 13px; color: var(--muted); }
-.guard svg { flex: none; margin-top: 2px; color: var(--sign); }
-.guard p { margin: 0; }
-.guard b { color: var(--sign); }
-.guard .guard-caught { margin-top: 3px; color: var(--ink); }
+.sheet-error { margin: 0 0 10px; color: #7A0A1C; }
+/* The guard, closing the answer in one line: its mark and its name green like the place sign, since it vouches
+   for the answer; what it caught in ink; the note on the answer's dates after it. */
+.seal { display: flex; gap: 8px; align-items: flex-start; margin: 4px 18px 0; padding: 12px 0 16px; border-top: 1px solid var(--rule);
+  font-size: 12.5px; line-height: 1.45; color: var(--muted); flex: none; }
+.seal svg { flex: none; margin-top: 1px; color: var(--sign); }
+.seal p { margin: 0; }
+.seal b { color: var(--sign); font-weight: 600; }
+.seal-caught { color: var(--ink); }
 
 /* the place, as a street-name sign */
 .plate {
@@ -262,9 +274,9 @@ button { cursor: pointer; }
 .sweep::after { content: ""; position: absolute; top: 0; bottom: 0; width: 22px; border-radius: 3px; background: var(--hl); animation: sweep 1.1s ease-in-out infinite alternate; }
 @keyframes sweep { from { left: 0; } to { left: 34px; } }
 
-.answer-text p { margin: 0 0 8px; max-width: 72ch; }
-.answer-text ul { margin: 0 0 8px; padding-left: 18px; }
-.answer-text li { margin-bottom: 6px; max-width: 70ch; }
+.answer-text p { margin: 0 0 10px; max-width: 72ch; }
+.answer-text ul { margin: 0 0 10px; padding-left: 18px; }
+.answer-text li { margin-bottom: 10px; max-width: 70ch; }
 .answer-text li::marker { color: var(--muted); }
 .answer-text .note { font-size: 14px; color: var(--muted); border-left: 3px solid var(--rule); padding-left: 10px; }
 
@@ -274,6 +286,7 @@ button { cursor: pointer; }
   font-size: 12px; font-weight: 700; line-height: 1; vertical-align: 1px;
 }
 .cite:hover { box-shadow: inset 0 0 0 1.5px var(--ink); }
+.cite-range { padding: 0 6px; font-variant-numeric: tabular-nums; }   /* a run of citations, "6–16" */
 .cite[aria-pressed="true"] { background: var(--ink); color: var(--hl); }
 .cite.static { cursor: default; }
 /* A web page the answer cites (p5-09): names its site and opens the page; not a City record, so not yellow. */
@@ -498,7 +511,7 @@ button { cursor: pointer; }
   :root { --bar-h: calc(var(--ask-h) + 8px + var(--fine-print-h) + env(safe-area-inset-bottom)); }
   .topbar { top: 8px; left: 8px; right: 8px; height: auto; justify-content: space-between; padding: 6px 8px 6px 12px; }
   .tagline, .fresh { display: none; }
-  .wordmark { font-size: 22px; }
+  .wordmark { font-size: 18px; padding: 4px 8px 3px; }
   .segmented button { padding: 3px 8px; font-size: 13px; }
   .segmented .seg-date { max-width: 112px; }
   .seg-long { display: none; }
@@ -527,6 +540,15 @@ button { cursor: pointer; }
   .panel-open .dock-row { padding-right: 8px; }
   .panel-open .dock-row > :not(.askbar) { visibility: hidden; }
   .sheet { flex: none; max-height: 48vh; }
+  /* Little height: the whole card scrolls as one, the sign and headline going up with the answer, and the
+     headline takes less of it. */
+  .sheet { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(27, 36, 51, .28) transparent; }
+  .sheet-body { overflow: visible; }
+  .headline { font-size: 24px; margin-top: 10px; }
+  .sheet-head { padding: 12px 14px 0; }
+  .headline, .sheet-ctx { margin-left: 14px; margin-right: 14px; }
+  .sheet-body { padding-left: 14px; padding-right: 14px; }
+  .seal { margin-left: 14px; margin-right: 14px; }
   .legend { width: auto; margin: 0 0 0 auto; }
   .legend:not(.closed) { width: 100%; }
 
@@ -545,9 +567,11 @@ button { cursor: pointer; }
 @keyframes drop-in { from { opacity: 0; transform: translateY(-8px); } }
 @keyframes drop-out { to { opacity: 0; transform: translateY(-8px); } }
 @keyframes notice-in { from { opacity: 0; transform: translate(-50%, -6px); } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(4px); } }
 .sheet, .about { animation: card-in var(--dur) var(--ease) backwards; }
 .replay { animation: drop-in var(--dur) var(--ease) backwards; }
 .map-error, .pick-hint { animation: notice-in var(--dur) var(--ease) backwards; }
+.headline { animation: rise-in var(--dur) var(--ease) backwards; }   /* it can land after the answer, once its records do */
 .about.leaving { animation: card-out var(--dur-out) ease-in forwards; pointer-events: none; }
 .replay.leaving { animation: drop-out var(--dur-out) ease-in forwards; pointer-events: none; }
 

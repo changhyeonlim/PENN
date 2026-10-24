@@ -41,11 +41,17 @@ function clean(text: string) {
 
 type Props = {
   text: string; titles: Record<string, string>; selected: string | null; onCite: (id: string) => void;
+  /** A run of three or more citations in a row, numbered one after another, opens as one list. */
+  onCites: (ids: string[]) => void;
+  /** A citation pointed at (hover or keyboard focus), its records' ids; null when it is left. */
+  onPoint?: (ids: string[] | null) => void;
   web?: WebSource[];
 };
 
 /** The model's light markdown (paragraphs, "- " lists, **bold**, *italic*) with each citation as a numbered chip. */
-export function AnswerText({ text, titles, selected, onCite, web = [] }: Props) {
+export function AnswerText({ text, titles, selected, onCite, onCites, onPoint, web = [] }: Props) {
+  const point = (ids: string[]) => ({ onMouseEnter: () => onPoint?.(ids), onFocus: () => onPoint?.(ids),
+    onMouseLeave: () => onPoint?.(null), onBlur: () => onPoint?.(null) });
   const body = clean(text);
   const order = citationOrder(text);
   const pages = Object.fromEntries(web.map(w => [w.id, w]));
@@ -54,8 +60,27 @@ export function AnswerText({ text, titles, selected, onCite, web = [] }: Props) 
   const inline = (s: string, key: string): ReactNode[] => {
     const out: ReactNode[] = [];
     let last = 0, i = 0;
-    for (const m of s.matchAll(CITE)) {
+    const cites = [...s.matchAll(CITE)];
+    const end = (m: RegExpMatchArray) => (m.index ?? 0) + m[0].length;
+    for (let k = 0; k < cites.length; k++) {
+      const m = cites[k];
       out.push(...bold(s.slice(last, m.index), `${key}t${i}`));
+      // Records cited back to back (nothing but spaces between), numbered one after another: one chip, "6–16".
+      let j = k;
+      while (j + 1 < cites.length && !isWeb(cites[j][1]) && !isWeb(cites[j + 1][1])
+        && !s.slice(end(cites[j]), cites[j + 1].index).trim()
+        && order.indexOf(cites[j + 1][1]) === order.indexOf(cites[j][1]) + 1) j++;
+      if (j - k >= 2) {
+        const ids = cites.slice(k, j + 1).map(c => c[1]);
+        const [a, b] = [order.indexOf(ids[0]) + 1, order.indexOf(ids[ids.length - 1]) + 1];
+        out.push(
+          <button key={`${key}r${i}`} type="button" className="cite cite-range" aria-pressed={!!selected && ids.includes(selected)}
+            title={`Records ${a} to ${b}`} aria-label={`Records ${a} to ${b}`} onClick={() => onCites(ids)} {...point(ids)}>{a}–{b}</button>);
+        last = end(cites[j]);
+        k = j;
+        i++;
+        continue;
+      }
       const id = m[1];
       if (isWeb(id)) {
         const w = pages[id];
@@ -67,7 +92,7 @@ export function AnswerText({ text, titles, selected, onCite, web = [] }: Props) 
               <Globe />{w.site}<External />
             </a>);
         }
-        last = (m.index ?? 0) + m[0].length;
+        last = end(m);
         i++;
         continue;
       }
@@ -75,8 +100,8 @@ export function AnswerText({ text, titles, selected, onCite, web = [] }: Props) 
       out.push(
         <button key={`${key}c${i}`} type="button" className="cite" aria-pressed={selected === id}
           title={titles[id] ?? id} aria-label={`Record ${n}${titles[id] ? `: ${titles[id]}` : ""}`}
-          onClick={() => onCite(id)}>{n}</button>);
-      last = (m.index ?? 0) + m[0].length;
+          onClick={() => onCite(id)} {...point([id])}>{n}</button>);
+      last = end(m);
       i++;
     }
     out.push(...bold(s.slice(last), `${key}e`));

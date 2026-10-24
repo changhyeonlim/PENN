@@ -4,12 +4,12 @@ import * as maplibregl from "maplibre-gl";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AnswerText, citationOrder } from "@/components/AnswerText";
 import { GuardLine } from "@/components/GuardLine";
-import { usePresence, useSmoothSize } from "@/lib/motion";
+import { glow, usePresence, useSmoothSize } from "@/lib/motion";
 import { Legend } from "@/components/Legend";
 import { PermitPanel } from "@/components/PermitPanel";
 import { ReplayBar } from "@/components/ReplayBar";
 import {
-  activeToday, appNow, askAgent, category, extent, GROUND, HOOD, isMinor, isOver, MINOR_ZOOM, PARK, isListing, COLOR, daysAway, pinDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, realNow, ROAD, setReplayClock, shortWhen, STRENGTH,
+  activeToday, answerHeadline, appNow, askAgent, category, extent, GROUND, HOOD, isMinor, isOver, MINOR_ZOOM, PARK, isListing, COLOR, daysAway, pinDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, realNow, ROAD, setReplayClock, shortWhen, STRENGTH,
   strengthBand, streetCase, tidy, todayStatus, wktToGeometry,
   type AgentReply, type AskContext, type AskTurn, type Busiest, type Category, type Extent, type PennEvent, type View,
 } from "@/lib/api";
@@ -22,7 +22,8 @@ maplibregl.setWorkerUrl(new URL("maplibre-gl/dist/maplibre-gl-worker.mjs", impor
 const STYLE = "https://tiles.openfreemap.org/styles/positron";
 // Center City, river to river and Spring Garden to South St.
 const CENTER_CITY: [[number, number], [number, number]] = [[-75.1830, 39.9415], [-75.1415, 39.9620]];
-const MAX_CITED_ON_MAP = 30;
+// The answer's records lit on the map: its citations, then what the place search found there, biggest first.
+const MAX_CITED_ON_MAP = 60;
 const DATA_LAYERS = ["listings", "full", "lane", "sidewalk", "parking", "points", "points-minor", "cited-line"];
 // Lines by how much of the street they take, heaviest first; a no-parking curb line last.
 const LINE_RANK = (e: PennEvent) => (category(e) === "parking" ? 3 : { full: 0, lane: 1, sidewalk: 2 }[extent(e)]);
@@ -232,6 +233,42 @@ function boundsOf(features: GeoJSON.Feature[]): maplibregl.LngLatBounds | null {
 }
 
 const reduceMotion = () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// The answer's arrival. The highlighter is a gradient along each cited line's own length (line-progress, from the
+// source's lineMetrics): yellow up to p of the way, clear past it, so moving p from 0 to 1 draws the stroke from
+// the line's start to its end.
+const HL_CLEAR = "rgba(255, 212, 59, 0)";
+const stroke = (p: number) => (p >= 1 ? ["interpolate", ["linear"], ["line-progress"], 0, HIGHLIGHT, 1, HIGHLIGHT]
+  : ["step", ["line-progress"], HIGHLIGHT, Math.max(p, 1e-4), HL_CLEAR]) as maplibregl.ExpressionSpecification;
+const NONE = ["==", ["get", "event_id"], ""] as maplibregl.FilterSpecification;
+// Slow enough to be seen along a single short block: the arrival's stroke, a citation's replay, and the moment the
+// citation numbers glow (as the arrival's stroke is mostly drawn).
+const STROKE_MS = 1400, TRACE_MS = 900, GLOW_AT_MS = 1000;
+/** Run frame from 0 to 1 over ms, easing out; without motion, only its last frame. Returns a stop. */
+function animate(ms: number, frame: (p: number) => void): () => void {
+  if (reduceMotion()) { frame(1); return () => {}; }
+  let raf = 0;
+  const t0 = performance.now();
+  // The clock read in each frame, not the frame's own timestamp: that marks when the frame began, which can be
+  // before t0, and a progress below 0 eases to values out of range (an opacity of 1.06).
+  const tick = () => {
+    const x = Math.max(0, Math.min(1, (performance.now() - t0) / ms));
+    frame(1 - (1 - x) ** 3);
+    if (x < 1) raf = requestAnimationFrame(tick);
+  };
+  frame(0);
+  raf = requestAnimationFrame(tick);
+  return () => cancelAnimationFrame(raf);
+}
+/** One yellow ring out of each cited pin (ids), or of all of them (null): a pin has no length to draw along. */
+function ring(m: maplibregl.Map, ids: string[] | null): () => void {
+  if (!m.getLayer("cite-ring") || reduceMotion()) return () => {};
+  m.setFilter("cite-ring", ids ? ["all", isPoint, ["in", ["get", "event_id"], ["literal", ids]]] as maplibregl.FilterSpecification : isPoint);
+  return animate(700, p => {
+    m.setPaintProperty("cite-ring", "circle-radius", 8 + 22 * p);
+    m.setPaintProperty("cite-ring", "circle-stroke-opacity", Math.min(1, Math.max(0, 1 - p)));
+  });
+}
 const isNarrow = () => typeof window !== "undefined" && window.matchMedia("(max-width: 720px)").matches;
 // From this width the answer is a column down the left (see .sheet in globals.css), not a sheet over the bottom.
 const hasRail = () => typeof window !== "undefined" && window.matchMedia("(min-width: 900px)").matches;
@@ -284,6 +321,7 @@ export default function Page() {
   const [reply, setReply] = useState<AgentReply | null>(null);
   const [sheetOpen, setSheetOpen] = useState(true);
   const [citedIds, setCitedIds] = useState<string[]>([]);
+  const [, setCitedLoaded] = useState(0);
   const [pin, setPin] = useState<[number, number] | null>(null);   // [lon, lat]
   const [picking, setPicking] = useState(false);
 
@@ -529,7 +567,7 @@ export default function Page() {
       if (m.getSource("events")) return;
       const empty: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
       m.addSource("events", { type: "geojson", data: empty, promoteId: "event_id" });
-      m.addSource("cited", { type: "geojson", data: empty });
+      m.addSource("cited", { type: "geojson", data: empty, lineMetrics: true });   // line-progress, for the stroke
       m.addSource("selected", { type: "geojson", data: empty });
       const pin = new Image(PIN_PX.w, PIN_PX.h);
       pin.onload = () => { if (!m.hasImage(PIN_ICON)) m.addImage(PIN_ICON, pin, { pixelRatio: PIN_PX.ratio }); };
@@ -611,7 +649,13 @@ export default function Page() {
 
       // The answer's records: a highlighter stroke under the street, then the record's own line.
       add({ id: "cited-glow", type: "line", source: "cited", filter: isLine, layout: round,
-        paint: { "line-color": HIGHLIGHT, "line-width": zoomWidth(12, 30), "line-opacity": 0.85, "line-blur": 1 } });
+        paint: { "line-gradient": stroke(1), "line-width": zoomWidth(12, 30), "line-opacity": 0.85, "line-blur": 1 } });
+      // The answer's records that load after the first stroke (the rest of what it touched): stroked on arrival.
+      add({ id: "cite-late", type: "line", source: "cited", filter: NONE, layout: round,
+        paint: { "line-gradient": stroke(1), "line-width": zoomWidth(12, 30), "line-opacity": 0.85, "line-blur": 1 } });
+      // One record's stroke drawn again while its citation is pointed at (the glow leaves that record to it).
+      add({ id: "cite-trace", type: "line", source: "cited", filter: NONE, layout: round,
+        paint: { "line-gradient": stroke(1), "line-width": zoomWidth(12, 30), "line-opacity": 0.85, "line-blur": 1 } });
       add({ id: "selected-halo", type: "line", source: "selected", filter: isLine, layout: round,
         paint: { "line-color": "#1B2433", "line-width": zoomWidth(9, 18), "line-opacity": 0.9 } });
       // Color says why (REASON_COLOR), weight says how much of the street: dots for the sidewalk, a thin line for one
@@ -635,7 +679,12 @@ export default function Page() {
       // The answer's own lines over every city layer, a little heavier than the rest, so a cited line still reads
       // clearly on its highlighter stroke.
       add({ id: "cited-line", type: "line", source: "cited", filter: isLine, layout: round,
-        paint: { "line-opacity": todayOpacity, "line-color": ["get", "color"], "line-width": zoomWidth(3.5, 8) } });
+        paint: { "line-opacity": todayOpacity, "line-color": ["get", "color"], "line-width": zoomWidth(3.5, 8),
+          "line-opacity-transition": { duration: reduceMotion() ? 0 : 300 } } });
+      // The late records' own lines, apart so they can fade in under their stroke while the first ones stay.
+      add({ id: "cite-late-line", type: "line", source: "cited", filter: NONE, layout: round,
+        paint: { "line-opacity": 0, "line-color": ["get", "color"], "line-width": zoomWidth(3.5, 8),
+          "line-opacity-transition": { duration: reduceMotion() ? 0 : 300 } } });
       const dot: maplibregl.CircleLayerSpecification["paint"] = { "circle-opacity": todayOpacity, "circle-stroke-opacity": todayOpacity,
         "circle-color": REASON_COLOR, "circle-radius": zoomWidth(3.5, 7), "circle-stroke-color": "#fff", "circle-stroke-width": 1.5 };
       const isDot = ["==", ["geometry-type"], "Point"] as maplibregl.ExpressionSpecification;
@@ -671,7 +720,11 @@ export default function Page() {
       // Listings (visitphilly, Ticketmaster): pins over everything, street names included, so a pin on a closed
       // street stays visible and clickable. Under each pin's tip, a highlighter dot when cited and a ring when open.
       m.addLayer({ id: "cited-point", type: "circle", source: "cited", filter: isPoint,
-        paint: { "circle-color": HIGHLIGHT, "circle-radius": zoomWidth(9, 14), "circle-opacity": 0.85, "circle-blur": 0.2 } });
+        paint: { "circle-color": HIGHLIGHT, "circle-radius": zoomWidth(9, 14), "circle-opacity": 0.85, "circle-blur": 0.2,
+          "circle-opacity-transition": { duration: reduceMotion() ? 0 : 300 } } });
+      m.addLayer({ id: "cite-ring", type: "circle", source: "cited", filter: NONE,
+        paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": 8, "circle-stroke-color": "#F2B705", "circle-stroke-width": 2.5,
+          "circle-stroke-opacity": 0 } });
       m.addLayer({ id: "selected-point", type: "circle", source: "selected", filter: isPoint,
         paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": zoomWidth(8, 12), "circle-stroke-color": "#1B2433", "circle-stroke-width": 2.5 } });
       m.addLayer({ id: "listings", type: "symbol", source: "events", filter: ["in", ["get", "cat"], ["literal", ["listing", "ticketed"]]],
@@ -728,6 +781,7 @@ export default function Page() {
       setHover(null);
       if (h.length === 1) { setChoices([]); select(h[0]); return; }
       setChoices(h);
+      setChoicesRange(null);
       setSelected(null);
       setPanelOpen(true);
       (m.getSource("selected") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features: toFeatures(h) });
@@ -826,17 +880,115 @@ export default function Page() {
   }, [aboutOpen, picking, closePanel]);
 
   // ---- asking ----
-  async function showCited(ids: string[], fitIfNoPlace: boolean, extra: maplibregl.LngLatBounds | null = null) {
+  /** The answer's records on the map. The first `lead` ids are the ones its text cites: they are drawn, framed
+   *  and stroked as soon as they load, and the rest of what the answer touched joins them quietly after. */
+  async function showCited(ids: string[], fitIfNoPlace: boolean, extra: maplibregl.LngLatBounds | null = null,
+    lead = ids.length, stale: () => boolean = () => false) {
     const m = map.current;
-    const got = await Promise.all(ids.slice(0, MAX_CITED_ON_MAP).map(id =>
-      known.current.get(id) ?? getJSON<PennEvent>(`/events/${encodeURIComponent(id)}`).catch(() => null)));
-    const evs = got.filter((e): e is PennEvent => !!e);
-    evs.forEach(e => known.current.set(e.event_id, e));
-    const features = toFeatures(evs).map(f => ({ ...f, properties: { ...f.properties, color: COLOR[f.properties!.cat as Category] } }));
-    (m?.getSource("cited") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features });
+    // Each record goes into known as it arrives, and the card redraws (known is a ref), so the headline and the
+    // citations' titles need not wait for the slowest record either.
+    // Most of them are on the map already (the city layer for these dates): taken from there at once, the rest
+    // fetched.
+    const onMap = new Map(cityEvents.current.map(e => [e.event_id, e]));
+    const load = (some: string[]) => Promise.all(some.map(id =>
+      known.current.get(id) ?? onMap.get(id) ?? getJSON<PennEvent>(`/events/${encodeURIComponent(id)}`)
+        .then(e => { known.current.set(e.event_id, e); setCitedLoaded(n => n + 1); return e; }).catch(() => null)))
+      .then(got => {
+        const evs = got.filter((e): e is PennEvent => !!e);
+        evs.forEach(e => known.current.set(e.event_id, e));
+        return evs;
+      });
+    const draw = (evs: PennEvent[]) => {
+      const features = toFeatures(evs).map(f => ({ ...f, properties: { ...f.properties, color: COLOR[f.properties!.cat as Category] } }));
+      (m?.getSource("cited") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features });
+      return features;
+    };
+    const wanted = ids.slice(0, MAX_CITED_ON_MAP);
+    const first = await load(wanted.slice(0, Math.max(lead, 1)));
+    if (stale()) return;
+    // Nothing of them shows until the camera is still: then they appear and the stroke draws in, once.
+    hideCited();
+    const features = draw(first);
     let b = fitIfNoPlace ? boundsOf(features) : null;
     if (fitIfNoPlace && extra) b = b ? b.extend(extra) : extra;   // the landmarks the answer names, too
     if (b) fly(b, 16.5);
+    if (m) { if (m.isMoving()) m.once("moveend", arrive); else arrive(); }
+    if (wanted.length <= lead) return;
+    const rest = await load(wanted.slice(Math.max(lead, 1)));
+    if (stale()) return;
+    draw([...first, ...rest]);
+    // In before the first stroke: they draw with it. After it: they draw on their own layer, the first one kept.
+    if (!arrived.current || !m) return;
+    late.current = rest.map(e => e.event_id).filter(id => !first.some(e => e.event_id === id));
+    setFilters();
+    m.setPaintProperty("cite-late-line", "line-opacity", todayOpacity);
+    stopLate.current();
+    stopLate.current = animate(STROKE_MS, p => m.setPaintProperty("cite-late", "line-gradient", stroke(p)));
+    stopRing.current();
+    stopRing.current = ring(m, late.current);
+  }
+
+  const stopStroke = useRef<() => void>(() => {});
+  const stopLate = useRef<() => void>(() => {});
+  const stopTrace = useRef<() => void>(() => {});
+  const stopRing = useRef<() => void>(() => {});
+  const arrived = useRef(false);                     // the first stroke of this answer has started
+  const late = useRef<string[]>([]);                 // records stroked after it, on cite-late
+  const pointed = useRef<string[] | null>(null);     // the records of the citation pointed at, on cite-trace
+  /** The three highlighter layers share the answer's lines: the first stroke, the late records, and the
+   *  citation pointed at, which the other two leave to it. */
+  function setFilters() {
+    const m = map.current;
+    if (!m?.getLayer("cite-late")) return;
+    const among = (ids: string[]) => ["in", ["get", "event_id"], ["literal", ids]] as maplibregl.ExpressionSpecification;
+    const not = (ids: string[] | null) => (ids?.length ? [["!", among(ids)]] : []) as maplibregl.ExpressionSpecification[];
+    const all = (...f: unknown[]) => ["all", ...f] as maplibregl.FilterSpecification;
+    m.setFilter("cited-glow", all(isLine, ...not(late.current), ...not(pointed.current)));
+    m.setFilter("cited-line", all(isLine, ...not(late.current)));
+    m.setFilter("cite-late-line", late.current.length ? all(isLine, among(late.current)) : NONE);
+    m.setFilter("cite-late", late.current.length ? all(isLine, among(late.current), ...not(pointed.current)) : NONE);
+    m.setFilter("cite-trace", pointed.current ? all(isLine, among(pointed.current)) : NONE);
+  }
+  /** Before an answer's records arrive: no stroke, no line, no dot, so the first thing seen is the stroke drawn. */
+  function hideCited() {
+    const m = map.current;
+    if (!m?.getLayer("cited-glow")) return;
+    stopStroke.current(); stopLate.current();
+    arrived.current = false;
+    late.current = [];
+    setFilters();
+    m.setPaintProperty("cited-glow", "line-gradient", stroke(0));
+    m.setPaintProperty("cited-line", "line-opacity", 0);
+    m.setPaintProperty("cite-late-line", "line-opacity", 0);
+    m.setPaintProperty("cited-point", "circle-opacity", 0);
+    stopRing.current();
+    m.setPaintProperty("cite-ring", "circle-stroke-opacity", 0);
+  }
+  /** The camera is still: the lines and dots fade in, the stroke draws, the pins ring, then the numbers glow. */
+  function arrive() {
+    const m = map.current;
+    if (!m?.getLayer("cited-glow") || arrived.current) return;
+    arrived.current = true;
+    m.setPaintProperty("cited-line", "line-opacity", todayOpacity);
+    m.setPaintProperty("cited-point", "circle-opacity", 0.85);
+    stopStroke.current();
+    stopStroke.current = animate(STROKE_MS, p => m.setPaintProperty("cited-glow", "line-gradient", stroke(p)));
+    stopRing.current();
+    stopRing.current = ring(m, null);
+    setTimeout(() => glow(document.querySelectorAll(".answer-text .cite")), reduceMotion() ? 0 : GLOW_AT_MS);
+  }
+  /** A citation pointed at (hovered or focused): its records drawn again, their pins rung; null puts the
+   *  highlighter back over every cited record. */
+  function trace(ids: string[] | null) {
+    const m = map.current;
+    if (!m?.getLayer("cite-trace")) return;
+    stopTrace.current();
+    pointed.current = ids;
+    setFilters();
+    if (!ids) return;
+    stopTrace.current = animate(TRACE_MS, p => m.setPaintProperty("cite-trace", "line-gradient", stroke(p)));
+    stopRing.current();
+    stopRing.current = ring(m, ids);
   }
 
   async function ask(q: string, at: [number, number] | null = pin) {
@@ -844,6 +996,8 @@ export default function Page() {
     if (!q) return;
     const seq = ++askSeq.current;
     const stale = () => seq !== askSeq.current;
+    trace(null);
+    hideCited();
     setAsked(q); setStatus("locating"); setReply(null); setSheetOpen(true); setCitedIds([]); setPlace(null); setPlacePoint(null); setMarks([]);
     (map.current?.getSource("cited") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features: [] });
 
@@ -889,7 +1043,9 @@ export default function Page() {
       // Settle once the answer has its real height, so the place sits clear of the sheet.
       const settle = placeView ?? view;
       if (settle) requestAnimationFrame(() => requestAnimationFrame(() => { if (!stale()) fly(settle.bounds); }));
-      const ids = r.answer ? Array.from(new Set([...citationOrder(r.answer), ...(r.cited ?? [])])) : r.cited ?? [];
+      // The answer's own citations first (stroked on arrival), then what it touched, then the rest of what the search
+      // found on the streets at the place: a closure beside a place belongs on its map even when the prose skips it.
+      const ids = Array.from(new Set([...(r.answer ? citationOrder(r.answer) : []), ...(r.cited ?? []), ...(r.nearby ?? [])]));
       setCitedIds(ids);
       // No place in the question: the landmarks the answer names are pinned, and the map frames them with
       // the cited records (one landmark: centered; several: zoomed out to fit all).
@@ -899,7 +1055,7 @@ export default function Page() {
         const lb = new maplibregl.LngLatBounds(l.bounds[0], l.bounds[1]);
         return acc ? acc.extend(lb) : lb;
       }, null);
-      if (ids.length) await showCited(ids, !flew, lmBounds);
+      if (ids.length) await showCited(ids, !flew, lmBounds, r.answer ? citationOrder(r.answer).length : ids.length, stale);
       else if (lmBounds) fly(lmBounds, 16);
     } catch (err) {
       if (stale()) return;
@@ -946,6 +1102,25 @@ export default function Page() {
     setWin(w => (w === "answer" ? 7 : w));
   }
 
+  // A run of citations ("6–16") opens as a list in the panel, like several records under one click.
+  const [choicesRange, setChoicesRange] = useState<[number, number] | null>(null);
+  const onCites = (ids: string[]) => {
+    Promise.all(ids.map(id => known.current.get(id) ?? getJSON<PennEvent>(`/events/${encodeURIComponent(id)}`)
+      .then(full => { known.current.set(full.event_id, full); return full; }).catch(() => null)))
+      .then(found => {
+        const recs = found.filter((e): e is PennEvent => !!e);
+        if (!recs.length) return;
+        const features = toFeatures(recs);
+        setChoices(recs);
+        setChoicesRange([citedNumber(ids[0]), citedNumber(ids[ids.length - 1])]);
+        setSelected(null);
+        setPanelOpen(true);
+        (map.current?.getSource("selected") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features });
+        const b = boundsOf(features);
+        if (b) { panelOpenRef.current = true; fly(b, 17); }
+      });
+  };
+
   const onCite = (id: string) => {
     const e = known.current.get(id);
     if (e) { setChoices([]); select(e, { focus: true }); return; }
@@ -963,8 +1138,13 @@ export default function Page() {
   const citedNumber = (id: string) => order.indexOf(id) + 1;
   const busy = status === "locating" || status === "reading";
   const hasSheet = status !== "idle";
-  const kindNote = reply?.window_kind === "future" ? "Upcoming dates: some permits may not be filed yet."
+  const kindNote = reply?.window_kind === "future" ? "Upcoming permits may not be filed yet."
     : reply?.window_kind === "past" ? "Past dates: this is what the records show was permitted." : "";
+  const when = reply?.window ?? place?.window ?? "";
+  // The headline waits for every cited record to be loaded, so it never counts half of them.
+  const citedRecs = order.map(id => known.current.get(id));
+  const headline = reply?.answer && !busy && order.length && citedRecs.every(Boolean)
+    ? answerHeadline(citedRecs as PennEvent[], reply.start, reply.end) : null;
 
   return (
     <main className={`app${panelOpen ? " panel-open" : ""}${picking ? " picking" : ""}${win === "replay" ? " replaying" : ""}`}>
@@ -1020,27 +1200,32 @@ export default function Page() {
       )}
 
       <PermitPanel open={panelOpen} choices={choices} event={selected} loading={detailLoading} error={detailError}
-        citedNumber={citedNumber} partnersOf={partnersOf} datesOf={e => seriesOf.current.get(e.event_id) ?? [e]} onPick={e => select(e)} onBack={choices.length > 1 ? () => setSelected(null) : null}
+        citedNumber={citedNumber} range={choicesRange} partnersOf={partnersOf} datesOf={e => seriesOf.current.get(e.event_id) ?? [e]} onPick={e => select(e)} onBack={choices.length > 1 ? () => setSelected(null) : null}
         onClose={closePanel} />
 
       <div className="dock">
         <div className="dock-row" ref={dockRef}>
           {hasSheet && (
             <section ref={setSheetEl} className={`sheet${sheetOpen ? "" : " collapsed"}`} aria-live="polite" aria-busy={busy}>
+              {/* The place's sign, then the result in one line, then what was asked and for when; the answer under
+                  a rule, and the guard closing it. Folded, the sign and the headline stay. */}
               <div className="sheet-head">
                 {place?.name ? <span className="plate">{place.name}</span>
-                  : busy ? <span className="plate pending">Finding the place</span> : null}
-                <span className="sheet-when">{reply?.window ?? place?.window ?? ""}</span>
-                {onTopic && !busy && (
-                  <button type="button" className="text-btn" title="PENN forgets the earlier questions and their place"
-                    onClick={forget}>New topic</button>
-                )}
-                <button type="button" className="text-btn sheet-toggle" aria-expanded={sheetOpen}
-                  onClick={() => setSheetOpen(o => !o)}>{sheetOpen ? "Hide answer" : "Show answer"}</button>
+                  : busy ? <span className="plate pending">Finding the place</span> : <span />}
+                <div className="sheet-acts">
+                  {onTopic && !busy && (
+                    <button type="button" className="text-btn" title="PENN forgets the earlier questions and their place"
+                      onClick={forget}>New topic</button>
+                  )}
+                  <button type="button" className="text-btn sheet-toggle" aria-expanded={sheetOpen}
+                    aria-label={sheetOpen ? "Hide answer" : "Show answer"} onClick={() => setSheetOpen(o => !o)}>
+                    {sheetOpen ? "Hide" : "Show"}</button>
+                </div>
               </div>
+              {headline && <h2 className="headline">{headline}</h2>}
+              {sheetOpen && <p className="sheet-ctx">&ldquo;{asked}&rdquo;{when ? `, ${when}` : ""}</p>}
               {sheetOpen && (
                 <div className="sheet-body">
-                  <p className="asked">{asked}</p>
                   {busy && (
                     <div className="working" role="status">
                       <span className="sweep" aria-hidden="true" />
@@ -1050,11 +1235,8 @@ export default function Page() {
                   {reply?.message && <p className={reply.outside || status === "error" ? "sheet-error" : "sheet-msg"}>{reply.message}</p>}
                   {reply?.answer && (
                     <>
-                      {kindNote && <p className="kind-note">{kindNote}</p>}
-                      <AnswerText text={reply.answer} titles={titles} selected={selected?.event_id ?? null} onCite={onCite} web={reply.web} />
-                      {reply.guard && <GuardLine guard={reply.guard} />}
-                      {order.length > 0 && <p className="sheet-foot">Numbers open the permit. Highlighted streets on the map are
-                        the ones cited; other records turn grey until you hide the answer.</p>}
+                      <AnswerText text={reply.answer} titles={titles} selected={selected?.event_id ?? null} onCite={onCite}
+                        onCites={onCites} onPoint={trace} web={reply.web} />
                       {reply.asked_back && !pin && (
                         <button type="button" className="text-btn" onClick={() => { pickFor.current = asked; setPicking(true); }}>
                           Pick a point on the map</button>
@@ -1063,6 +1245,7 @@ export default function Page() {
                   )}
                 </div>
               )}
+              {sheetOpen && reply?.answer && <GuardLine guard={reply.guard ?? null} note={kindNote} />}
             </section>
           )}
           <Legend counts={counts} bands={bands} citedCount={citedIds.length} hoods={showHoods} onHoods={setShowHoods}
