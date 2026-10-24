@@ -55,6 +55,37 @@ def _span_label(a: datetime, b: datetime) -> str:
     return f"{a:%a %b} {a.day} – {b:%a %b} {b.day}"
 
 
+def _found_groups(out: dict) -> list[tuple[str, list[str]]]:
+    """A place search's current results as groups of record ids, biggest first: new closures (block parties,
+    announced closures), the events, ongoing work, then lane work; not its past years. One event's permits or one
+    announcement's streets are one group. The minor kinds come as counts, without ids. geo/adjacent.py picks the
+    groups beside the place for the map to light."""
+    groups: list[tuple[str, list[str]]] = []
+    def ids_of(o) -> list[str]:
+        if not isinstance(o, dict):
+            return []
+        ids = [i for i in o.get("event_ids") or [] if isinstance(i, str)]
+        return ids or ([o["event_id"]] if isinstance(o.get("event_id"), str) else [])
+    def walk(section: str, o):
+        if isinstance(o, list):
+            for v in o:
+                walk(section, v)
+        elif isinstance(o, dict):
+            if ids := ids_of(o):
+                groups.append((section, ids))
+            else:
+                for v in o.values():
+                    walk(section, v)
+    around = out.get("getting_around") if isinstance(out.get("getting_around"), dict) else {}
+    walk("new", around.get("new"))
+    walk("events", out.get("events"))
+    walk("ongoing", around.get("ongoing"))
+    for k, v in around.items():
+        if k not in ("new", "ongoing"):
+            walk(k, v)
+    return groups
+
+
 @dataclass
 class Context:
     now: datetime
@@ -68,6 +99,7 @@ class Context:
     web_pages: dict[str, dict] = field(default_factory=dict)        # web id -> page, for citations.web_facts
     groups: list[list[str]] = field(default_factory=list)           # record groups kept from the model (take_groups)
     web_searched: bool = False                                      # find_event or search_web asked the web this turn
+    found: list[tuple[str, list[str]]] = field(default_factory=list)  # a place search's record groups (_found_groups)
 
     def __post_init__(self):
         start = self.now
@@ -231,6 +263,7 @@ class Context:
             tools.AREA.reset(area)
             tools.LEGS.reset(token)
         self.searches.append((place_id, window_id))
+        self.found += _found_groups(out)
         if detail == "full" and isinstance(out.get("events"), list):
             out = _for_model(out)
         if isinstance(out.get("past_events_here"), dict):

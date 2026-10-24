@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from . import db, overlaps, tools
 from .agent import ambiguity, citations
 from .config import LOCAL_TZ
-from .geo import landmarks, locate
+from .geo import adjacent, landmarks, locate
 from . import timeutil
 from .timeutil import resolve_window
 
@@ -247,6 +247,9 @@ def agent(body: AskBody):
     web = [{"id": i, "title": ctx.web_pages[i].get("title", ""), "url": ctx.web_pages[i]["url"],
             "site": ctx.web_pages[i].get("site", "")} for i in dict.fromkeys(cited) if i in ctx.web_pages]
     cited = [i for i in cited if not i.startswith("web:")]
+    # What the place search found beside the place (its streets, within reach of its outline) and the answer did
+    # not cite: the map lights these too, after the cited ones; the headline still counts only the cited.
+    nearby = adjacent.beside(ctx.found, place, set(cited))
     # Landmarks the answer (then the question) names (p3-10): when the question named no place, the map
     # frames them and pins each one; with a place, the map keeps the place.
     # The hallucination guard, as the answer shows it: how many records it cites (every one matched to this
@@ -261,6 +264,6 @@ def agent(body: AskBody):
             "window_kind": win.kind if win else None,
             "start": win.window.start.isoformat() if win else None, "end": win.window.end.isoformat() if win else None,
             "view": _view(place.loc) if place else None, "model": a.route.model,
-            "route_reason": a.route.reason, "tools": a.tools_called, "cited": cited, "calls": a.calls, "guard": guard,
+            "route_reason": a.route.reason, "tools": a.tools_called, "cited": cited, "nearby": nearby, "calls": a.calls, "guard": guard,
             "asked_back": not ctx.searches,          # nothing searched: PENN asked or chatted; offer a pin
             "context": _next_context(place, win, body.context)}
