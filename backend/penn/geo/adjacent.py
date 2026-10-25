@@ -3,7 +3,8 @@ the block parties on Walnut Street, along its north side, light up whether or no
 
 Beside means within REACH_M of the place: of a landmark's outline (its bounds), or of a corner's or an address's
 point. A group of records (one event's permits, one announced closure's streets) is lit whole when any of it is
-beside the place. A neighborhood is itself the place: all that its search found, but the routine lane work.
+beside the place. A neighborhood has no "beside": the whole area is the place, and lighting all it holds would
+bury what the answer is about (two block parties under every closure in Fishtown), so it gets none.
 """
 from __future__ import annotations
 
@@ -73,13 +74,10 @@ def _beside(wkt: str, box: Box) -> bool:
 def beside(groups: list[tuple[str, list[str]]], place, skip: set[str] = frozenset()) -> list[str]:
     """The ids of the groups beside the place, in the search's order, leaving out `skip` (the cited)."""
     box = _box(place) if place else None
-    if place and box is None:
-        keep = [ids for section, ids in groups if section != "lane_work"]
-    else:
-        ids = list(dict.fromkeys(i for _, g in groups for i in g))
-        if not ids or box is None:
-            return []
-        rows = db.query("SELECT event_id, geometry_wkt FROM events FINAL WHERE event_id IN %(ids)s", {"ids": ids})
-        near = {r["event_id"] for r in rows if _beside(r["geometry_wkt"], box)}
-        keep = [g for _, g in groups if any(i in near for i in g)]
+    ids = list(dict.fromkeys(i for _, g in groups for i in g))
+    if not ids or box is None:   # no place, or a neighborhood
+        return []
+    rows = db.query("SELECT event_id, geometry_wkt FROM events FINAL WHERE event_id IN %(ids)s", {"ids": ids})
+    near = {r["event_id"] for r in rows if _beside(r["geometry_wkt"], box)}
+    keep = [g for _, g in groups if any(i in near for i in g)]
     return [i for i in dict.fromkeys(i for g in keep for i in g) if i not in skip]

@@ -114,9 +114,10 @@ export function Legend({ counts, bands, citedCount, loading, hoods, onHoods, hid
             {citedCount > 0 && (
               <li className="legend-cited">
                 <Swatch cat="cited" />
-                <span className="legend-label">In the answer</span>
+                <span className="legend-label">Highlighted</span>
                 <span className="legend-count">{citedCount}</span>
-                {explain && <span className="legend-meaning">Yellow marks the permits the answer cites. Numbers in the answer open them.</span>}
+                {explain && <span className="legend-meaning">Yellow marks the permits the answer cites, and the closures on
+                  the streets beside the place you asked about. Numbers in the answer open the cited ones.</span>}
               </li>
             )}
           </ul>
