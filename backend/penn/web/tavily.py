@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 import time as clock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -107,6 +108,25 @@ def search_open(query: str, client: httpx.Client | None = None, cache_dir: Path 
     return _run(open_body(query), client, cache_dir, now)
 
 
+_searches: dict[str, int] = {}     # UTC date -> searches sent to Tavily that day
+_searches_lock = threading.Lock()
+
+
+def _take_search(now: datetime) -> bool:
+    """One network search from today's allowance (settings.web_searches_per_day; 0 = no limit)."""
+    limit = getattr(settings, "web_searches_per_day", 0)
+    if not limit:
+        return True
+    day = now.strftime("%Y-%m-%d")
+    with _searches_lock:
+        for d in [d for d in _searches if d != day]:
+            del _searches[d]
+        if _searches.get(day, 0) >= limit:
+            return False
+        _searches[day] = _searches.get(day, 0) + 1
+        return True
+
+
 def _run(req: dict, client: httpx.Client | None, cache_dir: Path, now: datetime | None) -> dict:
     path = cache_dir / f"{_key(req['query'], req['include_domains'])}.json"
     now = now or datetime.now(timezone.utc)
@@ -119,6 +139,8 @@ def _run(req: dict, client: httpx.Client | None, cache_dir: Path, now: datetime 
         return {"results": [], "query": req["query"], "note": "demo mode: no saved web search for this event"}
     if not settings.tavily_api_key:
         return {"results": [], "query": req["query"], "note": "web search is not set up (no Tavily key)"}
+    if not _take_search(now):
+        return {"results": [], "query": req["query"], "note": "the web-search limit for today is reached"}
     client = client or httpx.Client(timeout=30)
     for attempt in (1, 2):
         try:

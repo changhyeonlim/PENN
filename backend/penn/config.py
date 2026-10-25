@@ -72,5 +72,12 @@ class Settings:
     # snapshot (jobs/freeze_demo.py, CLICKHOUSE_DB=penn_demo) answers the same way on any day.
     pinned_now: str = field(default_factory=lambda: os.getenv("PENN_NOW", ""))
 
+    # Spend ceilings for one Ask PENN question, so no question can be made expensive (0 = no ceiling). The
+    # public deployment sets them (deploy/endpoint/start.sh); a typical answer uses about 25k prompt tokens.
+    turn_token_budget: int = field(default_factory=lambda: int(os.getenv("PENN_TURN_TOKEN_BUDGET", "0")))
+    turn_seconds: float = field(default_factory=lambda: float(os.getenv("PENN_TURN_SECONDS", "0")))
+    # Tavily searches that reach the network per day, per process (0 = no ceiling); cached searches are free.
+    web_searches_per_day: int = field(default_factory=lambda: int(os.getenv("PENN_WEB_SEARCHES_PER_DAY", "0")))
+
 
 settings = Settings()

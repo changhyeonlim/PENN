@@ -5,14 +5,16 @@ from datetime import date, datetime, timedelta
 from functools import lru_cache
 
 import os
+import time
 
 import h3
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from . import db, overlaps, tools
+from . import db, guardrails, overlaps, tools
 from .agent import ambiguity, citations
 from .config import LOCAL_TZ
 from .geo import adjacent, landmarks, locate
@@ -25,10 +27,27 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("PENN_CORS_ORIGINS", "http://localhost:3000").split(","),
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-PENN-Judge"],
 )
 # The city-wide map layer is ~2 MB of JSON and ~260 KB gzipped.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+# The public demo's guardrails (penn/guardrails.py; on with PENN_PUBLIC=1): every route is limited per visitor
+# here, and /agent adds its own layers below.
+@app.middleware("http")
+async def _per_visitor(request: Request, call_next):
+    if guardrails.PUBLIC:
+        try:
+            guardrails.check_request(guardrails.client_ip(request), request.url.path)
+        except guardrails.Limited as e:
+            return JSONResponse({"detail": e.message}, status_code=e.status)
+    return await call_next(request)
+
+
+@app.exception_handler(guardrails.Limited)
+def _limited(request: Request, e: guardrails.Limited):
+    return JSONResponse({"detail": e.message}, status_code=e.status)
 
 
 def _default_window(days: int = 7) -> tuple[str, str]:
@@ -129,6 +148,27 @@ def busiest(start: str, end: str):
     return {"days": days, "busiest": top["day"] if top else None}
 
 
+class IdsBody(BaseModel):
+    ids: list[str]
+
+
+# One answer can light a whole route (a Marathon edition is ~80 blocks); the map asks for them in one request.
+EVENTS_BATCH_MAX = 200
+
+
+@app.post("/events")
+def events_batch(body: IdsBody):
+    """Several records by id, in the order asked; ids PENN has no record of are left out."""
+    ids = list(dict.fromkeys(body.ids))
+    if len(ids) > EVENTS_BATCH_MAX:
+        raise HTTPException(413, f"At most {EVENTS_BATCH_MAX} ids at a time")
+    if not ids:
+        return []
+    rows = db.query(f"SELECT {tools.EVENT_FIELDS} FROM events FINAL WHERE event_id IN %(ids)s", {"ids": ids})
+    at = {i: n for n, i in enumerate(ids)}
+    return sorted(tools._jsonable(rows), key=lambda r: at[r["event_id"]])
+
+
 @app.get("/events/{event_id}")
 def event(event_id: str):
     rows = db.query(f"SELECT {tools.EVENT_FIELDS} FROM events FINAL WHERE event_id = %(id)s", {"id": event_id})
@@ -202,9 +242,42 @@ def _next_context(place, win, previous: dict | None) -> dict:
 
 
 @app.post("/agent")
-def agent(body: AskBody):
+def agent(body: AskBody, request: Request):
+    if not guardrails.PUBLIC:
+        return _answer(body)
+    ip, started, pool = guardrails.client_ip(request), time.monotonic(), "visitor"
+    try:
+        pool = guardrails.role(request, ip)
+        body.history, body.context = guardrails.trim(body.question, body.history, body.context)
+        guardrails.check_ask(ip, pool)
+        key = guardrails.cache_key(body.question, body.lat, body.lon, body.history, body.context)
+        if (hit := guardrails.cached(key)) is not None:
+            guardrails.record(ip, "cached", started, body.question, pool=pool)
+            return hit
+        with guardrails.fresh_answer(pool):
+            out = _answer(body)
+    except guardrails.Limited as e:
+        guardrails.record(ip, e.reason, started, body.question, pool=pool)
+        raise
+    real = out.get("guard") is not None     # a real answer, not a give-up, time-out, outage or "outside the city"
+    if real:
+        guardrails.store(key, out)
+    guardrails.record(ip, "fresh" if real else "no_answer", started, body.question, out, pool=pool)
+    return out
+
+
+@app.post("/judge")
+def judge(request: Request):
+    """The judge gate's check of an access code (header X-PENN-Judge): 200 when it's right. The page then sends
+    the code with every question, and /agent checks it again each time; this route only answers the gate."""
+    if guardrails.role(request, guardrails.client_ip(request)) != "judge":
+        raise guardrails.Limited(401, guardrails.BAD_CODE, "bad_code")
+    return {"ok": True}
+
+
+def _answer(body: AskBody) -> dict:
     from .agent.context import Context
-    from .agent.loop import GIVE_UP, TIMED_OUT, ask
+    from .agent.loop import GIVE_UP, TIMED_OUT, UNAVAILABLE, ask
 
     ctx = Context(timeutil.now_local(), records_start())
     if body.lat is not None and body.lon is not None:
@@ -255,7 +328,7 @@ def agent(body: AskBody):
     # The hallucination guard, as the answer shows it: how many records it cites (every one matched to this
     # turn's tool results by citations.check), whether code resolved the place and dates, and each draft a
     # check sent back. None when there is no answer to vouch for.
-    guard = None if a.text in (GIVE_UP, TIMED_OUT) else {
+    guard = None if a.text in (GIVE_UP, TIMED_OUT, UNAVAILABLE) else {
         "cited": len(set(a.cited)), "resolved_in_code": bool(ctx.searches), "sent_back": a.checks}
     named = landmarks.find(f"{answer} {body.question}")
     marks = [{"name": l.name, "point": list(l.point), "bounds": [list(c) for c in l.bounds]} for l in named[:8]]
@@ -265,5 +338,6 @@ def agent(body: AskBody):
             "start": win.window.start.isoformat() if win else None, "end": win.window.end.isoformat() if win else None,
             "view": _view(place.loc) if place else None, "model": a.route.model,
             "route_reason": a.route.reason, "tools": a.tools_called, "cited": cited, "nearby": nearby, "calls": a.calls, "guard": guard,
-            "asked_back": not ctx.searches,          # nothing searched: PENN asked or chatted; offer a pin
+            # nothing searched: PENN asked or chatted; offer a pin (not after a give-up, time-out or outage)
+            "asked_back": not ctx.searches and guard is not None,
             "context": _next_context(place, win, body.context)}

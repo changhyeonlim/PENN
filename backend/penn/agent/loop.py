@@ -23,7 +23,7 @@ The loop you are building, in plain terms:
 4. Record one entry per model call (model, reason, latency, tokens) in `calls`.
 """
 from __future__ import annotations
-from openai import APITimeoutError, OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from dataclasses import dataclass, field
 import json
 import re
@@ -291,6 +291,8 @@ WEB_NUDGE = ("Before saying PENN has no record, call search_web with a short que
              "where (not their whole message), then answer from what it finds, citing [id:web:...].")
 GIVE_UP = "PENN could not produce an answer it can support with its records. Try a narrower question."
 TIMED_OUT = "PENN's model took too long to answer. Try again in a moment."
+# The model service refused or failed: a revoked key (the public demo's kill switch), a spent budget, an outage.
+UNAVAILABLE = "Ask PENN is unavailable right now. The map still works; try a question again later."
 CUT_OFF = ("Your answer was cut off at the length limit. Answer again, shorter: the same facts and citations, "
            "one line per record, no extra explanation.")
 
@@ -534,7 +536,12 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
     estimated = False                # find_event gave only an estimated date, no City notice
     retried = nudged = counted = hedged = False
     sent_back: list[dict] = []       # what each check caught, for the answer's guard line
+    started, spent = time.monotonic(), 0   # the question's ceilings (settings.turn_*), so none can be made costly
     for _ in range(MAX_STEPS):
+        if settings.turn_seconds and time.monotonic() - started > settings.turn_seconds:
+            return Answer(TIMED_OUT, route, tools_called, [], "", calls, groups, sent_back)
+        if settings.turn_token_budget and spent > settings.turn_token_budget:
+            return Answer(GIVE_UP, route, tools_called, [], "", calls, groups, sent_back)
         t0 = time.monotonic()
         try:
             resp = client.chat.completions.create(model=route.model, messages=messages, temperature=0, tools=schemas,
@@ -544,6 +551,10 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
             calls.append({"model": route.model, "reason": route.reason, "error": "timeout",
                           "latency_ms": int((time.monotonic() - t0) * 1000), "prompt_tokens": 0, "output_tokens": 0})
             return Answer(TIMED_OUT, route, tools_called, [], "", calls, groups, sent_back)
+        except (APIConnectionError, APIStatusError) as exc:
+            calls.append({"model": route.model, "reason": route.reason, "error": type(exc).__name__,
+                          "latency_ms": int((time.monotonic() - t0) * 1000), "prompt_tokens": 0, "output_tokens": 0})
+            return Answer(UNAVAILABLE, route, tools_called, [], "", calls, groups, sent_back)
         calls.append({
             "model": route.model,
             "reason": route.reason,
@@ -551,6 +562,7 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
             "prompt_tokens": resp.usage.prompt_tokens,
             "output_tokens": resp.usage.completion_tokens
         })
+        spent += (resp.usage.prompt_tokens or 0) + (resp.usage.completion_tokens or 0)
         msg = resp.choices[0].message
 
         if msg.tool_calls:
