@@ -247,6 +247,12 @@ def test_code_picks_brief_or_full_from_the_message():
     assert choose_detail("Is Manning Street closed to traffic behind 1810 Rittenhouse Square?", "area") == "full"
     assert choose_detail("Is it busy at 13th and Locust?", "intersection") == "full"            # a corner
     assert choose_detail("Anything in Old City on October 17, 2026 and after?", "area") == "brief"  # a date, not an address
+    # What is happening at a landmark, or asked of a corner: the place briefing (impact.place).
+    assert choose_detail("what's happening in rittenhouse square today?", "landmark", "Rittenhouse Square") == "place"
+    assert choose_detail("What's going on at 18th and Walnut today?", "intersection", "S 18th St & Walnut St") == "place"
+    assert choose_detail("anything going on at LOVE Park?", "landmark", "LOVE Park") == "place"   # the name is no detail
+    assert choose_detail("Can I park at LOVE Park today?", "landmark", "LOVE Park") == "full"     # the question is
+    assert choose_detail("Can I drive to Rittenhouse Square Saturday?", "landmark", "Rittenhouse Square") == "brief"
 
 
 def test_the_models_type_filter_is_ignored(offline):
@@ -291,3 +297,25 @@ def test_find_event_says_whether_this_place_was_on_the_route(monkeypatch):
     assert seen["cells"] == [5] and seen["legs"] == [9] and seen["end"] > "2026-05-03T23"   # race day itself included
     monkeypatch.setattr(tools, "get_location_history", lambda *a, **k: {"events": []})
     assert ctx.find_event("Broad Street Run")["at_this_place"]["on_route"] is False
+
+
+def test_a_landmark_search_reaches_a_block_out_and_lights_its_groups(monkeypatch):
+    seen = {}
+
+    def search_events(cells, start, end, **kw):
+        seen.update(kw, near=tools.NEAR.get())
+        return {"detail": "place", "happening": [{"event_ids": ["lane_closures:a", "lane_closures:b"]}],
+                "construction": {"permits": 1, "biggest": [{"event_id": "lane_closures:c"}]},
+                "parking": [{"event_ids": ["lane_closures:d"]}], "count": 4}
+
+    monkeypatch.setattr(tools, "search_events", search_events)
+    ctx = make()
+    ctx.message = "what's happening in Rittenhouse Square today?"
+    ctx.add_place(locate.Resolved(cells=[1], label="Rittenhouse Square", method="landmark", point=(-75.172, 39.9495)),
+                  {"text": "Rittenhouse Square"}, "this_place")
+    out = ctx.search_events("this_place", "default_window")
+    assert seen["detail"] == "place" and out["searched"]["answer_shape"] == "place"
+    w, s, e, n = seen["near"]
+    assert w < -75.172 < e and s < 39.9495 < n            # the place's outline reached out a block
+    assert tools.NEAR.get() is None                       # and only for this search
+    assert [g for _, g in ctx.found] == [["lane_closures:a", "lane_closures:b"], ["lane_closures:c"], ["lane_closures:d"]]

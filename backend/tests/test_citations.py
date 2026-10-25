@@ -70,6 +70,9 @@ def test_group_members_are_citable_and_expand():
     groups = collect_groups(result)
     assert expand_groups(["a:1", "b:9"], groups) == ["a:1", "b:9", "a:2", "a:3"]
     assert expand_groups(["b:9"], groups) == ["b:9"]
+    # groups expand in the tools' order (an event's latest edition first), not the order the answer cites them
+    editions = [["2025:n", "2025:a", "2025:b"], ["2021:n", "2021:a"]]
+    assert expand_groups(["2021:n", "2025:n"], editions) == ["2021:n", "2025:n", "2025:a", "2025:b", "2021:a"]
 
 
 def test_web_cited_lines_state_only_what_the_page_says():

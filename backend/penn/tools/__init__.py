@@ -23,6 +23,9 @@ LEGS: ContextVar[list[int] | None] = ContextVar("penn_legs", default=None)
 # A neighborhood's outline in fine cells (locate.area_inside), set the same way: the search still matches by
 # the area's r9 cells, and the brief then keeps to the streets inside the outline.
 AREA: ContextVar[frozenset[int] | None] = ContextVar("penn_area", default=None)
+# A place's outline reached out a block (geo.adjacent.box, west/south/east/north), set the same way for a place
+# answer: records whose shape enters it are the place's own; the rest of the search is counted only.
+NEAR: ContextVar[tuple[float, float, float, float] | None] = ContextVar("penn_near", default=None)
 
 
 def place_filter(alias: str = "") -> str:
@@ -104,16 +107,18 @@ def search_events(cells: list[int], start: str, end: str, types: list[str] | Non
 
     detail="full" lists every record. detail="brief" sorts them into what matters for a trip
     (events, closures that change getting there, a count of the rest): see penn.agent.impact.
+    detail="place" sorts the records at the place (NEAR) by kind, biggest first: impact.place.
 
     Shortest first: a one-day loading zone says more about "this Saturday" than a year-long
     sidewalk shed, and with a limit the long ones are the ones to drop. Open-ended permits go
     last. `truncated` tells the model more matches exist, so it never claims a complete list.
     """
-    brief = detail == "brief"
+    brief = detail in ("brief", "place")
     if brief:
         limit = max(limit, BRIEF_LIMIT)
+    extra = ", seg_ids, geometry_wkt" if detail == "place" else ", seg_ids" if brief else ""
     sql = f"""
-        SELECT {TOOL_FIELDS}{", seg_ids" if brief else ""} FROM events FINAL
+        SELECT {TOOL_FIELDS}{extra} FROM events FINAL
         WHERE {place_filter()} AND {ACTIVE_FILTER}
           {"AND event_type IN %(types)s" if types else ""}
           {"" if include_311 else "AND source != 'philly_311'"}
@@ -126,7 +131,10 @@ def search_events(cells: list[int], start: str, end: str, types: list[str] | Non
                           **params, **place_params()})
     truncated = len(rows) > limit
     rows = rows[:limit]
-    if brief:
+    if detail == "place":
+        from ..agent import impact
+        out = impact.place(_jsonable(rows), start, NEAR.get(), LEGS.get()) | {"count": len(rows), "truncated": truncated}
+    elif brief:
         from ..agent import impact
         out = impact.brief(_jsonable(rows), start, inside=AREA.get()) | {"count": len(rows), "truncated": truncated}
     else:

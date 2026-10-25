@@ -214,6 +214,27 @@ People use PENN to decide whether to go somewhere and how to get there. Give the
 - If a closure group falls on an event's street and dates, say it is likely for that event, never certain.
 - Keep it short: no more than about 10 lines.""",
 
+    "place": """ANSWER SHAPE: PLACE (code chose it for what is happening at a place)
+Code already sorted the records at the place and one block out by kind, biggest first. Write a short briefing in
+  that order, not a permit list, and keep code's order inside each part.
+1. First line: "Around <place>, <window label>:" then the biggest thing, happening's FIRST item: its "what" in
+   those words ("a block party"), its streets and blocks, its extent, its day, cited. If it has likely_for, say it is likely for that event, not
+   certain, and give the event's times, then copy likely_for's cite. If happening is empty, lead with the first
+   item of construction.biggest.
+2. Happening: one line for each happening item after the first (never repeat the first line's item; with one
+   item, skip this part): what, streets, extent, day, its cite. A group is one line, never one per permit.
+3. Construction: a heading line with the number, "Construction: <construction.permits> permits", then one line
+   for EVERY item in construction.biggest: a few words of its title, its blocks, its extent, its dates, cited.
+   If construction.more exists, end the part with its count by extent: "Plus 6 more on the map: 3 lane
+   closures, 3 sidewalk only."
+4. Parking: one line per parking item: its reason, how many permits (count), its streets, then its cite string
+   copied whole. "parking rules relaxed" permits relax the posted rules; they do not ban parking.
+5. Last line, only if farther.count is not 0: "Plus <farther.count> more records farther out are on the map."
+- Write each item's extent field as its words ("full closure", "lane closure, the street stays open", "sidewalk
+  only", "curb only"): it says how much of the street the permit takes. Never "Partial Closure" or "Footway".
+- Leave out a part with no items. Days and dates come from each item's "when" text, copied as written.
+- Keep it to about 14 lines.""",
+
     "full": """ANSWER SHAPE: FULL (code chose it for permits, closures, one block or an address)
 - First line: a direct answer. Give the number of matching permits when asked how many, or when an
   item has count and permits: that item is several permits with one title on one block, so say
@@ -358,7 +379,7 @@ PERMIT_LINE = "Permits list dates only, not daily hours or which days work happe
 def _add_permit_line(text: str, shapes: list[str]) -> str:
     """The FULL shape's closing line, added in code when an answer cites a permit and left it out: without
     it "in effect Oct 6 to Dec 31" reads as work every day (Super skipped it on the eval's sp05)."""
-    if "full" not in shapes or _PERMIT_LINE.search(text):
+    if not {"full", "place"} & set(shapes) or _PERMIT_LINE.search(text):
         return text
     if not any(c.startswith("lane_closures:") for c in citations.CITE.findall(text)):
         return text

@@ -358,3 +358,219 @@ def brief(rows: list[dict], start: str, inside: frozenset[int] | None = None) ->
         "getting_around": {k: v for k, v in getting_around.items() if v or k in ("new", "ongoing")},
         "minor": {"count": sum(by_kind.values()), "by_kind": by_kind},
     }
+
+
+# A place question ("what's happening in Rittenhouse Square today?"): the records at the place and a block out
+# (geo.adjacent.box), by kind and biggest first, so the answer reads as a briefing, not a permit list. Given the
+# 45 records of a seven-cell search as one flat list, the model kept the three that name Rittenhouse Sq and left
+# out the block parties on Walnut St and the Temple's no-parking on S 18th St, both on the square's own edges.
+#
+#     happening      block parties, announced closures and film shoots (groups first, the most blocks first),
+#                    then listed events; a closure on a listed event's street and day names it (likely_for)
+#     construction   every other permit: how many, the PLACE_LIST biggest (full closures first, then lanes,
+#                    then sidewalks) and the rest counted by extent
+#     parking        no-parking and loading permits, one item per reason (religious services, moving, ...)
+#     farther        the rest of the search, counted by kind
+#
+# Each closure says its extent in words (EXTENT): the model wrote "Partial Closure" with no hint it is one lane.
+PLACE_LIST = 6
+EXTENT = {"Full Closure": "full closure", "Partial Closure": "lane closure, the street stays open",
+          "Footway": "sidewalk only"}
+EXTENT_COUNT = {"Full Closure": "full closures", "Partial Closure": "lane closures", "Footway": "sidewalk only"}
+CURB = "curb only, not a traffic lane"
+ANNOUNCED = "announced street closure (City notice)"
+_OCC_RANK = {"Full Closure": 0, "Partial Closure": 1, "Footway": 2}
+# A "Relaxation Of Parking Regulations" permit is filed as construction now and then; its title says what it is.
+# "Loading Construction Materials" is a work zone, not a loading zone.
+PARKING_TITLE = re.compile(r"\b(parking|valet)\b|\bloading\s*/\s*unloading\b", re.I)
+# Fields a place item never needs: the same for every permit, or said by its extent (with occupancy beside it,
+# the model wrote "Partial Closure" and left the extent out).
+_PLACE_DROP = {"source", "source_url", "source_authority", "status", "main_street", "occupancy"}
+# In answer order: restrictions first, the permits that relax the posted rules last.
+PARKING_REASONS = (
+    ("religious services", re.compile(r"\b(relig\w*|church|temple|synagogue|mosque|worship|mass|services?|"
+                                      r"observances?|funeral)\b", re.I)),
+    ("moving or loading", re.compile(r"\b(loading|unloading|mov(e|ing|ers?))\b", re.I)),
+    ("valet", re.compile(r"\bvalet\b", re.I)),
+    ("other parking restrictions", re.compile(r"(?!)")),
+    ("parking rules relaxed", re.compile(r"\brelax", re.I)),
+)
+_REASON_ORDER = [n for n, _ in PARKING_REASONS]
+# What a happening closure is, in the words the answer leads with: given only "kind": "block_party", the model
+# wrote "a permit listing a Full Closure" and never said block party.
+WHAT = {"event_closures": "announced street closure", "block_party": "block party", "film_shoot": "film shoot"}
+FARTHER = {"listing": "listed events", "closure": "block parties and event closures",
+           "construction": "construction permits", "parking": "parking and loading permits",
+           "planned": "planned or open-ended work with no firm dates"}
+
+
+def _is_parking(r: dict) -> bool:
+    return r.get("event_type") == "parking_restriction" or bool(PARKING_TITLE.search(r.get("title") or ""))
+
+
+def extent(r: dict) -> str:
+    """How much of the street a record takes, in words: a full closure, a lane, the sidewalk or the curb."""
+    if r.get("source") == "event_closures":
+        return ANNOUNCED
+    if _is_parking(r):
+        return CURB
+    return EXTENT.get(r.get("occupancy") or "", "")
+
+
+def place_kind(r: dict) -> str:
+    """'listing', 'closure' (block party, announced closure, film shoot), 'parking', 'planned' or 'construction'."""
+    if r.get("source") in EVENT_SOURCES or (r.get("event_type") == "event" and r.get("source") != "event_closures"):
+        return "listing"
+    if r.get("source") == "event_closures" or r.get("event_type") in ("block_party", "film_shoot"):
+        return "closure"
+    if r.get("claim_certainty") == "planned" or r.get("open_ended"):
+        return "planned"
+    return "parking" if _is_parking(r) else "construction"
+
+
+def _near(r: dict, box, legs: frozenset[int]) -> bool:
+    """Whether the record is on one of a corner's legs or its shape enters the box; a record with no shape stays
+    rather than be lost. A permit's shape can be part of its block: the Temple's no-parking on the 200 block of
+    S 18th St is drawn from mid-block south, a block from 18th and Walnut, though the block is a leg."""
+    if box is None or not r.get("geometry_wkt") or legs & set(r.get("seg_ids") or []):
+        return True
+    from ..geo import adjacent
+    return adjacent.touches(r["geometry_wkt"], box)
+
+
+def _times(r: dict) -> str:
+    if not r.get("start_ts"):
+        return ""
+    return _clock(r["start_ts"]) + (f" – {_clock(r['end_ts'])}" if r.get("end_ts") else "")
+
+
+def _first(item: dict) -> str:
+    return (item.get("event_ids") or [item.get("event_id")])[0]
+
+
+_STREET_TYPES = {v.lower() for v in SUFFIX.values()} | {"st", "ave", "sq"}
+
+
+def _street_words(streets: str) -> set[str]:
+    """'Walnut St (1500–1900 blocks), S 18th St (100 block)' -> {'walnut', '18th'}."""
+    out = set()
+    for part in streets.split("),"):
+        words = [w for w in re.sub(r"\(.*", "", part).split()
+                 if w not in ("N", "S", "E", "W") and w.lower() not in _STREET_TYPES]
+        if words:
+            out.add(words[0].lower())
+    return out
+
+
+def _likely_for(item: dict, first: dict, listings: list[dict]) -> dict | None:
+    """The listed event on a closure's street and day, if one is: the Open Streets block-party permits on Walnut St
+    are on the Open Streets listing's street, and the hours come from the listing."""
+    words = _street_words(item.get("streets") or "")
+    day = _span(first)[0]
+    for e in listings:
+        text = f"{e.get('title') or ''} {e.get('description') or ''}".lower()
+        s, end = _span(e)           # a listing's run covers the day ("Sundays only", Oct 17 – Oct 25)
+        on_day = day is not None and s is not None and s <= day <= (end or s)
+        if on_day and any(re.search(rf"\b{re.escape(w)}\b", text) for w in words):
+            return {"event_id": e["event_id"], "title": e.get("title"), "when": when(e),
+                    **({"times": _times(e)} if _times(e) else {}), "cite": f"[id:{e['event_id']}]",
+                    "note": "a listed event on this street that day: the closure is likely for it, not certain"}
+    return None
+
+
+def _lean(item: dict) -> dict:
+    """A place item without the fields every permit repeats."""
+    return {k: v for k, v in item.items() if k not in _PLACE_DROP and v is not False
+            and not (k == "claim_certainty" and v == "scheduled")
+            and not (k == "organization" and str(v).endswith("(permit issuer)"))}
+
+
+def _days(r: dict) -> int:
+    s, e = _span(r)
+    return (e - s).days if s and e else 100000
+
+
+def _parking_groups(rows: list[dict]) -> list[dict]:
+    """No-parking and loading permits, one item per reason, in PARKING_REASONS order."""
+    by_reason: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        title = r.get("title") or ""
+        by_reason[next((n for n, rx in PARKING_REASONS if rx.search(title)), "other parking restrictions")].append(r)
+    out = []
+    for reason, members in sorted(by_reason.items(), key=lambda kv: _REASON_ORDER.index(kv[0])):
+        ids = [m["event_id"] for m in members]
+        streets = streets_text([i for m in members for i in m.get("seg_ids") or []])
+        out.append({"reason": reason, "count": len(members), "extent": CURB,
+                    "titles": sorted({m.get("title", "") for m in members}),
+                    "streets": streets or "; ".join(dict.fromkeys(m.get("description") or "" for m in members)),
+                    "permits": [{"event_id": m["event_id"], "when": when(m)} for m in members],
+                    "event_ids": ids, "cite": " ".join(f"[id:{i}]" for i in ids)})
+    return out
+
+
+def place(rows: list[dict], start: str, box=None, legs: list[int] | None = None) -> dict:
+    """Sort search_events rows (with seg_ids and geometry_wkt) into a place briefing. `start` is the window start
+    (ISO); `box` the place reached out a block (geo.adjacent.box), None when every record is the place's own;
+    `legs` a corner's centerline legs (tools.LEGS)."""
+    w0 = datetime.fromisoformat(start).astimezone(LOCAL_TZ).date()
+    legs = frozenset(legs or ())
+    flags = [_near(r, box, legs) for r in rows]
+    # One event's permits stay together: a block party group is the place's when any of its blocks is.
+    keys = {_group_key(r) for r, f in zip(rows, flags) if f and place_kind(r) == "closure"} - {None}
+    listings, closures, construction, parking = [], [], [], []
+    farther: dict[str, int] = defaultdict(int)
+    by_id: dict[str, dict] = {}
+    for r, f in zip(rows, flags):
+        kind = place_kind(r)
+        if kind == "planned" or not (f or (kind == "closure" and _group_key(r) in keys)):
+            farther[kind] += 1
+            continue
+        r = {k: v for k, v in r.items() if k != "geometry_wkt"}
+        by_id[r["event_id"]] = r
+        if kind == "listing":
+            listings.append(r)
+        elif kind == "parking":
+            parking.append(r)
+        else:
+            (closures if kind == "closure" else construction).append(_mark_main(r))
+
+    happening = sorted(_grouped(closures), key=_weight)
+    linked = set()
+    for item in happening:
+        first = by_id[_first(item)]
+        item["what"] = WHAT.get(first.get("source"), WHAT.get(first.get("event_type"), "event"))
+        item["extent"] = extent(first)
+        if item.get("kind") == "block_party":
+            # "Block Party For 1800 Block Of Walnut St" seven times over: listed, the model wrote one line per
+            # permit and cited them out of order. The streets say the same in one line.
+            item.pop("titles", None)
+        if like := _likely_for(item, first, listings):
+            item["likely_for"] = like
+            linked.add(like["event_id"])
+    # Street events (a parade, a street fair) before shows; shorter runs before months-long exhibitions.
+    shown = sorted((e for e in listings if e["event_id"] not in linked),
+                   key=lambda e: (not STREET_EVENT.search(e.get("title") or ""), _days(e)))
+    happening += [_compact(e) | ({"times": _times(e)} if _times(e) else {}) for e in shown]
+
+    def weight(item: dict) -> tuple:
+        first = by_id[_first(item)]
+        s, _ = _span(first)
+        return (_OCC_RANK.get(first.get("occupancy") or "", 3), not item.get("main_street"),
+                not (s is not None and s >= w0), _days(first))
+    work = sorted(_grouped(construction), key=weight)
+    for item in work:
+        item["extent"] = extent(by_id[_first(item)])
+    more: dict[str, int] = defaultdict(int)
+    for item in work[PLACE_LIST:]:
+        for i in item.get("event_ids") or [item["event_id"]]:
+            more[EXTENT_COUNT.get(by_id[i].get("occupancy") or "", "other")] += 1
+
+    by_kind = {FARTHER[k]: n for k, n in sorted(farther.items(), key=lambda kv: -kv[1]) if n}
+    work_out = {"permits": len(construction), "biggest": [_lean(i) for i in work[:PLACE_LIST]]}
+    if more:
+        work_out["more"] = {"count": sum(more.values()), "by_extent": dict(more)}
+    return {"detail": "place", "reach": "the place's own blocks and one block out",
+            "happening": [_lean(i) for i in happening], "construction": work_out if construction else {},
+            "parking": _parking_groups(parking),
+            "farther": {"count": sum(by_kind.values()), "by_kind": by_kind,
+                        "note": "farther out in the search, or with no firm dates: on the map, not listed here"}}

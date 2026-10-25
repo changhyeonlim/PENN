@@ -96,12 +96,13 @@ def collect_groups(obj) -> list[list[str]]:
 
 
 def expand_groups(cited: list[str], groups: list[list[str]]) -> list[str]:
-    """Cited IDs plus every other member of a group any of them belongs to, in order, no repeats."""
-    out = list(cited)
-    for c in cited:
-        for g in groups:
-            if c in g:
-                out += [i for i in g if i not in out]
+    """Cited IDs plus every other member of a group any of them belongs to, no repeats: the cited first, then
+    the groups in the order the tools gave them (an event's editions latest first), whatever order the answer
+    cites them in. The map lights only the first few dozen, so the latest route must come first."""
+    out, cites = list(cited), set(cited)
+    for g in groups:
+        if cites.intersection(g):
+            out += [i for i in g if i not in out]
     return out
 
 

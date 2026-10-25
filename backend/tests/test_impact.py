@@ -116,3 +116,72 @@ def test_event_street():
     assert impact.event_street("Field Day, 923 N. 2nd Street, Philadelphia, PA") == "N 2nd St"
     assert impact.event_street("6800 & 6900 blocks of Torresdale Avenue, Philadelphia, PA") == "Torresdale Ave"
     assert impact.event_street("Shofuso Japanese Cultural Center, Lansdowne & Horticultural drives") is None
+
+
+# A place answer (impact.place): a box around the place, near = shape inside it.
+BOX = (0.0, 0.0, 1.0, 1.0)
+IN, OUT = "LINESTRING (0.5 0.5, 0.6 0.6)", "LINESTRING (5 5, 6 6)"
+
+
+def test_place_sorts_by_kind_biggest_first_with_extent(monkeypatch):
+    monkeypatch.setattr(impact, "_seg_class", lambda seg_ids: 4)
+    party = lambda i, wkt: permit(f"bp{i}", "Full Closure", "block_party", "2026-10-25", "2026-10-25",
+                                  title=f"Block Party For {i} Block Of Walnut St", geometry_wkt=wkt)
+    open_streets = {"event_id": "visitphilly:open-streets", "source": "visitphilly", "event_type": "event",
+                    "title": "Open Streets: West Walnut", "description": "Walnut Street from Broad Street to 19th Street",
+                    "start_date": "2026-10-25", "end_date": "2026-10-25", "start_ts": "2026-10-25T10:00:00-04:00",
+                    "end_ts": "2026-10-25T17:00:00-04:00", "geometry_wkt": IN, "seg_ids": []}
+    rows = [party(1500, OUT), party(1800, IN), open_streets,                  # one block near: the whole group is
+            permit("shed", "Footway", "construction", geometry_wkt=IN),
+            permit("lane", "Partial Closure", geometry_wkt=IN),
+            permit("dig", "Full Closure", geometry_wkt=IN),
+            permit("far", "Full Closure", geometry_wkt=OUT),
+            permit("temple", et="parking_restriction", title="Weekly Religious Observance For Temple", geometry_wkt=IN),
+            permit("relax", et="construction", title="Relaxation Of Parking Regulations", geometry_wkt=IN)]
+    monkeypatch.setattr(impact, "streets_text", lambda seg_ids: "Walnut St (1500–1800 blocks)" if seg_ids else "")
+    for r in rows[:2]:
+        r["seg_ids"] = [1]
+    p = impact.place(rows, W0, BOX)
+    (group,) = p["happening"]                          # the listing is the group's event, not a second line
+    assert len(group["event_ids"]) == 2 and group["extent"] == "full closure" and "titles" not in group
+    assert group["what"] == "block party"
+    assert group["likely_for"]["event_id"] == "visitphilly:open-streets"
+    assert group["likely_for"]["times"] == "10:00 AM – 5:00 PM"
+    assert group["likely_for"]["cite"] == "[id:visitphilly:open-streets]"
+    work = p["construction"]
+    assert work["permits"] == 3
+    assert [i["event_id"] for i in work["biggest"]] == ["lane_closures:dig", "lane_closures:lane", "lane_closures:shed"]
+    assert [i["extent"] for i in work["biggest"]] == ["full closure", "lane closure, the street stays open",
+                                                      "sidewalk only"]
+    assert all("occupancy" not in i and "source_url" not in i for i in work["biggest"])
+    assert [g["reason"] for g in p["parking"]] == ["religious services", "parking rules relaxed"]   # bans first
+    assert p["parking"][0]["cite"] == "[id:lane_closures:temple]"
+    assert p["farther"]["by_kind"] == {"construction permits": 1}
+
+
+def test_place_lists_the_biggest_work_and_counts_the_rest(monkeypatch):
+    monkeypatch.setattr(impact, "_seg_class", lambda seg_ids: 5)
+    rows = [permit(i, "Footway" if i % 2 else "Partial Closure", "construction", start=f"2026-10-{10 + i}",
+                   geometry_wkt=IN) for i in range(impact.PLACE_LIST + 3)]
+    work = impact.place(rows, W0, BOX)["construction"]
+    assert len(work["biggest"]) == impact.PLACE_LIST and work["permits"] == impact.PLACE_LIST + 3
+    assert all(i["extent"] == "lane closure, the street stays open" for i in work["biggest"][:5])
+    assert work["more"] == {"count": 3, "by_extent": {"sidewalk only": 3}}
+
+
+def test_place_counts_a_corners_legs_as_near(monkeypatch):
+    """A permit can be drawn on part of its block: on a leg of the corner, it is the corner's."""
+    monkeypatch.setattr(impact, "_seg_class", lambda seg_ids: 5)
+    monkeypatch.setattr(impact, "streets_text", lambda seg_ids: "S 18th St (200 block)")
+    r = permit("temple", et="parking_restriction", title="Parking For Religious Services", geometry_wkt=OUT,
+               seg_ids=[77])
+    assert impact.place([r], W0, BOX)["farther"]["count"] == 1
+    assert impact.place([r], W0, BOX, legs=[77])["parking"][0]["event_ids"] == ["lane_closures:temple"]
+
+
+def test_extent_in_words():
+    assert impact.extent(permit(1, "Full Closure")) == "full closure"
+    assert impact.extent(permit(2, "Footway")) == "sidewalk only"
+    assert impact.extent(permit(3, et="parking_restriction")) == "curb only, not a traffic lane"
+    assert impact.extent(permit(4, title="Loading Construction Materials")) == "lane closure, the street stays open"
+    assert impact.extent({"source": "event_closures"}) == "announced street closure (City notice)"

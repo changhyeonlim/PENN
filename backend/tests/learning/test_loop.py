@@ -316,6 +316,7 @@ def test_no_rules_for_lookups_or_errors():
     assert loop.rules_for("search_events", {"error": "unknown place_id"}) == []
     assert loop.rules_for("find_event", {"matches": ["A", "B"]}) == []
     assert loop.rules_for("search_events", {"searched": {"answer_shape": "brief"}}) == ["permits", "brief"]
+    assert loop.rules_for("search_events", {"searched": {"answer_shape": "place"}}) == ["permits", "place"]
 
 
 def test_records_seen_reads_singles_and_groups():

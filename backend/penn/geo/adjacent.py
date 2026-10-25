@@ -5,6 +5,9 @@ Beside means within REACH_M of the place: of a landmark's outline (its bounds), 
 point. A group of records (one event's permits, one announced closure's streets) is lit whole when any of it is
 beside the place. A neighborhood has no "beside": the whole area is the place, and lighting all it holds would
 bury what the answer is about (two block parties under every closure in Fishtown), so it gets none.
+
+A place question's answer (impact.place) reaches farther, BLOCK_M: the place's own blocks and the next block out,
+so "what's happening in Rittenhouse Square?" takes in the 2000 block of Rittenhouse Sq past its west corner.
 """
 from __future__ import annotations
 
@@ -15,13 +18,14 @@ from .. import db
 from . import landmarks
 
 REACH_M = 45            # across a street from the place's edge
+BLOCK_M = 100           # and a block past it, for a place answer
 M_PER_DEG = 111_320
 
 Box = tuple[float, float, float, float]   # west, south, east, north
 
 
-def _box(place) -> Box | None:
-    """The place's outline, reached out by REACH_M; None for a neighborhood (all of it is the place)."""
+def box(place, reach_m: float = REACH_M) -> Box | None:
+    """The place's outline, reached out by reach_m; None for a neighborhood (all of it is the place)."""
     loc = place.loc
     if loc.method == "landmark":
         found = landmarks.find(place.label)
@@ -31,8 +35,8 @@ def _box(place) -> Box | None:
         (w, s), (e, n) = loc.point, loc.point
     else:
         return None
-    dy = REACH_M / M_PER_DEG
-    dx = REACH_M / (M_PER_DEG * cos(radians((s + n) / 2)))
+    dy = reach_m / M_PER_DEG
+    dx = reach_m / (M_PER_DEG * cos(radians((s + n) / 2)))
     return w - dx, s - dy, e + dx, n + dy
 
 
@@ -62,22 +66,23 @@ def _crosses(a: tuple[float, float], b: tuple[float, float], box: Box) -> bool:
     return True
 
 
-def _beside(wkt: str, box: Box) -> bool:
+def touches(wkt: str, b: Box) -> bool:
+    """Whether a record's shape enters the box."""
     for pts in _parts(wkt or ""):
-        if len(pts) == 1 and _crosses(pts[0], pts[0], box):
+        if len(pts) == 1 and _crosses(pts[0], pts[0], b):
             return True
-        if any(_crosses(a, b, box) for a, b in zip(pts, pts[1:])):
+        if any(_crosses(a, c, b) for a, c in zip(pts, pts[1:])):
             return True
     return False
 
 
 def beside(groups: list[tuple[str, list[str]]], place, skip: set[str] = frozenset()) -> list[str]:
     """The ids of the groups beside the place, in the search's order, leaving out `skip` (the cited)."""
-    box = _box(place) if place else None
+    b = box(place) if place else None
     ids = list(dict.fromkeys(i for _, g in groups for i in g))
-    if not ids or box is None:   # no place, or a neighborhood
+    if not ids or b is None:     # no place, or a neighborhood
         return []
     rows = db.query("SELECT event_id, geometry_wkt FROM events FINAL WHERE event_id IN %(ids)s", {"ids": ids})
-    near = {r["event_id"] for r in rows if _beside(r["geometry_wkt"], box)}
+    near = {r["event_id"] for r in rows if touches(r["geometry_wkt"], b)}
     keep = [g for _, g in groups if any(i in near for i in g)]
     return [i for i in dict.fromkeys(i for g in keep for i in g) if i not in skip]

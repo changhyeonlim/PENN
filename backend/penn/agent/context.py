@@ -25,7 +25,7 @@ from datetime import date, datetime, timedelta
 from .. import timeutil, tools
 from . import events as event_lookup
 from ..web import tavily
-from ..geo import locate
+from ..geo import adjacent, locate
 from ..timeutil import Window
 
 
@@ -58,8 +58,8 @@ def _span_label(a: datetime, b: datetime) -> str:
 def _found_groups(out: dict) -> list[tuple[str, list[str]]]:
     """A place search's current results as groups of record ids, biggest first: new closures (block parties,
     announced closures), the events, ongoing work, then lane work; not its past years. One event's permits or one
-    announcement's streets are one group. The minor kinds come as counts, without ids. geo/adjacent.py picks the
-    groups beside the place for the map to light."""
+    announcement's streets are one group. The minor kinds come as counts, without ids. A place answer's sections
+    (impact.place) come in its order. geo/adjacent.py picks the groups beside the place for the map to light."""
     groups: list[tuple[str, list[str]]] = []
     def ids_of(o) -> list[str]:
         if not isinstance(o, dict):
@@ -76,6 +76,8 @@ def _found_groups(out: dict) -> list[tuple[str, list[str]]]:
             else:
                 for v in o.values():
                     walk(section, v)
+    for section in ("happening", "construction", "parking"):
+        walk(section, out.get(section))
     around = out.get("getting_around") if isinstance(out.get("getting_around"), dict) else {}
     walk("new", around.get("new"))
     walk("events", out.get("events"))
@@ -252,14 +254,16 @@ class Context:
         if isinstance(h, dict):
             return h
         place, win = h
-        detail = choose_detail(self.message, place.loc.method)
+        detail = choose_detail(self.message, place.loc.method, place.label)
         max_days = short_term_days(self.message)
         token = tools.LEGS.set(place.loc.seg_ids or None)   # exact legs when a corner was named
         area = tools.AREA.set(place.loc.inside or None)     # a neighborhood's real outline
+        near = tools.NEAR.set(adjacent.box(place, adjacent.BLOCK_M) if detail == "place" else None)
         try:
             out = tools.search_events(place.loc.cells, win.window.start.isoformat(), win.window.end.isoformat(),
                                       include_311=include_311, detail=detail, max_days=max_days)
         finally:
+            tools.NEAR.reset(near)
             tools.AREA.reset(area)
             tools.LEGS.reset(token)
         self.searches.append((place_id, window_id))
@@ -304,8 +308,8 @@ class Context:
             # Older editions as dates, hours and cites; the closures of the latest one only.
             eds = h["editions"]
             # Each edition's whole route stays server side (a Marathon edition is ~80 ids): citing the
-            # edition lights every closure on the map through these groups.
-            self.groups += [e["event_ids"] for e in eds if len(e.get("event_ids") or []) > 1]
+            # edition lights every closure on the map through these groups, the latest edition's first.
+            self.groups += [e["event_ids"] for e in reversed(eds) if len(e.get("event_ids") or []) > 1]
             h["editions"] = [{k: v for k, v in e.items() if k != "event_ids" and (k != "closures" or i == len(eds) - 1)}
                              for i, e in enumerate(eds)]
             out = {"event": h["name"], "penn_records": h}
@@ -415,15 +419,27 @@ def short_term_days(message: str) -> int | None:
     return 2 if _SHORT_TERM.search(message) else None
 
 
-def choose_detail(message: str, place_method: str) -> str:
-    """brief (events, what changes getting there, a count of the rest) or full (every record).
+# What is going on at a place, asked as such: "what's happening at 18th and Walnut?", "anything going on near
+# City Hall?". Asked of a landmark, any question that is not a trip or about permits is one.
+_HAPPENING = re.compile(r"\b(happening|going on|what'?s on|what is on|anything (on|at|in|near|around)|what'?s up|"
+                        r"events?)\b", re.I)
+
+
+def choose_detail(message: str, place_method: str, place_label: str = "") -> str:
+    """brief (events, what changes getting there, a count of the rest), place (what is at the place
+    and a block out, by kind, biggest first: impact.place) or full (every record).
     A trip question gets the brief; a question about permits, closures or one block gets every
-    record; otherwise a neighborhood or a picked point gets the brief and a street, corner or
-    address the full list, which is short there."""
+    record; a landmark, or a corner or address asked what is happening there, gets the place
+    answer; otherwise a neighborhood or a picked point gets the brief and a street, corner or
+    address the full list, which is short there. The place's own name is not a detail word:
+    "LOVE Park" asks nothing about parking, "Can I park at LOVE Park?" still does."""
     if _TRIP.search(message):
         return "brief"
-    if _DETAIL.search(message):
+    words = re.sub(re.escape(place_label), " ", message, flags=re.I) if place_label else message
+    if _DETAIL.search(words):
         return "full"
+    if place_method == "landmark" or (place_method in ("intersection", "geocode") and _HAPPENING.search(words)):
+        return "place"
     return "brief" if place_method in ("area", "click") else "full"
 
 
@@ -525,7 +541,8 @@ SCHEMAS = [
         "name": "search_events",
         "description": "Every permit, curated event and other item at the place and active in the window. Code "
                        "picks the answer shape from the question (searched.answer_shape): a brief for an area or "
-                       "a trip, every record for permits, closures or one block. If truncated is true, more "
+                       "a trip, a place briefing for what is happening at a landmark or corner, every record for "
+                       "permits, closures or one block. If truncated is true, more "
                        "matches exist: say the list is partial.",
         "parameters": {"type": "object", "required": ["place_id", "window_id"], "properties": {
             **_IDS, "include_311": {"type": "boolean"}}}}},
