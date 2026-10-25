@@ -22,31 +22,34 @@ type Props = {
   step: number;                          // one move of the slider, ms (a day)
   days: BusyDay[]; busiest: string | null;
   at: number; onAt: (at: number) => void;
-  loading: boolean;                      // the month's records are still on their way
+  loading: boolean;                      // the 30 days' records are still on their way
   playing: boolean; onPlay: (on: boolean) => void;
   inEffect: number;                      // listings, ticketed shows, event closures and block parties in effect at `at`
   onBusiest: () => void;
   leaving?: boolean;                     // fading out after Replay is switched off
 };
 
-/** The replay's time slider. The month's days are the track, each bar as tall as that day is busy, and the
- *  handle is a needle through them: drag it, step it with the arrow keys, or play it, and the map's clock
- *  follows, so records fade in, take the street and drop off. */
+/** The replay's time slider. The last 30 days are the track, through today at its right edge, each bar as tall
+ *  as that day is busy, and the handle is a needle through them: drag it, step it with the arrow keys, or play
+ *  it, and the map's clock follows, so records fade in, take the street and drop off. The date on the map stays
+ *  on its plate, "Today" on the last day, so a replay is never read as the streets now. */
 export function ReplayBar({ start, end, step, days, busiest, at, onAt, loading, playing, onPlay, inEffect, onBusiest, leaving }: Props) {
   const first = new Date(start).toLocaleDateString("en-CA", { timeZone: NY });
   const current = new Date(at).toLocaleDateString("en-CA", { timeZone: NY });
   const count = Math.round((end - start) / DAY);
+  const today = new Date(end - DAY / 2).toLocaleDateString("en-CA", { timeZone: NY });   // the last day, `end` being its next midnight
   const max = Math.max(1, ...days.map(d => d.total));
   // Where a moment sits on the track, 0 to 100, as the needle places it (it stops at the last step's start).
   const travel = Math.max(1, end - step - start);
   const x = (t: number) => (t - start) / travel * 100;
   const dayX = (i: number) => x(start + i * DAY + (DAY - step) / 2);
   const barW = 100 * DAY / travel * 0.62;
-  const weeks = Array.from({ length: Math.ceil(count / 7) }, (_, w) => w * 7);
+  // A tick a week, counted back from today on the right edge.
+  const weeks = Array.from({ length: Math.ceil(count / 7) }, (_, w) => count - 1 - w * 7).reverse();
   const top = days.find(d => d.day === busiest);
   const unit = step >= DAY ? "that day" : "then";
   return (
-    <section className={`replay${leaving ? " leaving" : ""}`} aria-label="Replay: move the map through the month">
+    <section className={`replay${leaving ? " leaving" : ""}`} aria-label="Replay: move the map through the last 30 days">
       <div className="replay-head">
         <button type="button" className="replay-play" aria-label={playing ? "Pause" : step >= DAY ? "Play day by day" : "Play"}
           disabled={loading} onClick={() => onPlay(!playing)}>
@@ -55,11 +58,11 @@ export function ReplayBar({ start, end, step, days, busiest, at, onAt, loading, 
             : <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3.4 1.6v8.8L10.4 6z" fill="currentColor" /></svg>}
         </button>
         <span className={`replay-time${loading ? " pending" : ""}`}>
-          {loading ? new Date(start + DAY / 2).toLocaleDateString("en-US", { timeZone: NY, month: "long", year: "numeric" })
-            : replayStamp(at, step)}
+          {loading ? `${monthDay(first)} – ${monthDay(today)}`
+            : `${current === today ? "Today, " : ""}${replayStamp(at, step)}`}
         </span>
         <span className="replay-count" role="status">
-          {loading ? "Loading the month’s records" : <><b>{inEffect}</b> events, closures and block parties {unit}</>}
+          {loading ? "Loading the last 30 days’ records" : <><b>{inEffect}</b> events, closures and block parties {unit}</>}
         </span>
         {!loading && top && top.day !== current && (
           <button type="button" className="text-btn replay-busiest" onClick={onBusiest}
@@ -68,7 +71,7 @@ export function ReplayBar({ start, end, step, days, busiest, at, onAt, loading, 
             Busiest: {dayLabel(top.day)}
           </button>
         )}
-        {!loading && top && top.day === current && <span className="replay-busiest is-here">The month&rsquo;s busiest day</span>}
+        {!loading && top && top.day === current && <span className="replay-busiest is-here">The busiest of the 30 days</span>}
       </div>
       <div className="replay-track">
         <svg className="replay-bars" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
@@ -80,13 +83,15 @@ export function ReplayBar({ start, end, step, days, busiest, at, onAt, loading, 
           })}
         </svg>
         <input type="range" min={start} max={end - step} step={step} value={at} disabled={loading}
-          aria-label="Time on the map" aria-valuetext={replayStamp(at, step)}
+          aria-label="Time on the map" aria-valuetext={`${current === today ? "Today, " : ""}${replayStamp(at, step)}`}
           onChange={e => { onPlay(false); onAt(Number(e.target.value)); }} />
       </div>
       <div className="replay-weeks" aria-hidden="true">
         {weeks.map(i => {
           const day = new Date(start + i * DAY + DAY / 2).toLocaleDateString("en-CA", { timeZone: NY });
-          return <span key={i} style={{ left: `${dayX(i)}%` }}>{monthDay(day)}</span>;
+          // Today ends at the right edge; the rest center on their day.
+          return <span key={i} style={{ left: `${dayX(i)}%`, transform: `translateX(${day === today ? -100 : -50}%)` }}>
+            {day === today ? "Today" : monthDay(day)}</span>;
         })}
       </div>
     </section>

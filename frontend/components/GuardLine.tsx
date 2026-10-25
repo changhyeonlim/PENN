@@ -2,9 +2,18 @@ import type { Guard } from "@/lib/api";
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** The one line closing an answer: what the checks in code vouch for, what they caught, and the note on the
- *  answer's dates ("Upcoming permits may not be filed yet."). */
-export function GuardLine({ guard, note = "" }: { guard: Guard | null; note?: string }) {
+/** The model's name as its maker gives it: "NVIDIA Nemotron 3 Super" for "nvidia/nemotron-3-super-120b-a12b";
+ *  any other model by its id after the slash. */
+export function modelName(id: string): string {
+  const m = id.toLowerCase();
+  if (!m.includes("nemotron")) return id.split("/").pop() ?? id;
+  const size = ["ultra", "super", "nano"].find(s => m.includes(s));
+  return `NVIDIA Nemotron${/nemotron-3\b/.test(m) ? " 3" : ""}${size ? ` ${size[0].toUpperCase()}${size.slice(1)}` : ""}`;
+}
+
+/** The lines closing an answer: what the checks in code vouch for, what they caught, the note on the answer's
+ *  dates ("Upcoming permits may not be filed yet."), and the model that wrote it and where it runs. */
+export function GuardLine({ guard, note = "", model }: { guard: Guard | null; note?: string; model?: string | null }) {
   const vouched: string[] = [];
   if (guard?.cited === 1) vouched.push("1 citation, matched to a record PENN retrieved");
   if (guard && guard.cited > 1) vouched.push(`${guard.cited} citations, each matched to a record PENN retrieved`);
@@ -12,7 +21,7 @@ export function GuardLine({ guard, note = "" }: { guard: Guard | null; note?: st
   const sent = guard?.sent_back ?? [];
   const caught = Array.from(new Set(sent.map(s => s.label)));
   const said = vouched.join("; ");
-  if (!said && !caught.length && !note) return null;
+  if (!said && !caught.length && !note && !model) return null;
   return (
     <div className="seal" role="note" aria-label="Hallucination guard">
       {(said || caught.length > 0) && (
@@ -28,6 +37,8 @@ export function GuardLine({ guard, note = "" }: { guard: Guard | null; note?: st
           <span className="seal-caught">{said ? " " : ": "}{plural(sent.length, "draft")} sent back before you saw it: {caught.join("; ")}.</span>
         )}
         {note && <>{said || caught.length ? " " : ""}{note}</>}
+        {/* Credit where the work is seen, as a translation names its translator. */}
+        {model && <span className="seal-credit">Written by {modelName(model)} on Nebius Token Factory.</span>}
       </p>
     </div>
   );

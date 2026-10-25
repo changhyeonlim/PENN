@@ -260,6 +260,7 @@ button { cursor: pointer; }
 .seal p { margin: 0; }
 .seal b { color: var(--sign); font-weight: 600; }
 .seal-caught { color: var(--ink); }
+.seal-credit { display: block; margin-top: 4px; }   /* the model and where it runs, its own line */
 
 /* the place, as a street-name sign */
 .plate {
@@ -417,12 +418,16 @@ button { cursor: pointer; }
 .askbar input {
   flex: 1; min-width: 0; height: 44px; border: 0; border-radius: var(--r-ctl); padding: 0 8px;
   background: none; color: var(--ink); font-size: 16px;
+  text-overflow: ellipsis;   /* a placeholder, or a question typed, too long for the box ends in "…" */
 }
 .askbar input:focus-visible { outline: none; }   /* the whole box takes the focus ring, above */
 /* The rolling hint over the empty box: the lead-in stays put, the example rolls up to the next one. */
 .ask-hint {
   position: absolute; inset: 0 8px; display: flex; align-items: center; gap: 0 .3em; pointer-events: none;
   color: #727B88; font-size: 16px; white-space: nowrap; overflow: hidden;
+  /* A long example fades out at the box's end rather than stopping mid-word at the Ask button. */
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
 }
 .roll { position: relative; display: inline-block; color: #4A5464; clip-path: inset(0 -100vw 0 0); }
 .roll > span { display: inline-block; }

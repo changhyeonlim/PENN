@@ -8,10 +8,11 @@ import { glow, usePresence, useSmoothSize } from "@/lib/motion";
 import { Legend } from "@/components/Legend";
 import { PermitPanel } from "@/components/PermitPanel";
 import { ReplayBar } from "@/components/ReplayBar";
+import { RoleGate } from "@/components/RoleGate";
 import {
-  activeToday, answerHeadline, appNow, askAgent, category, extent, GROUND, HOOD, isMinor, isOver, MINOR_ZOOM, PARK, isListing, COLOR, daysAway, pinDataUrl, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, realNow, ROAD, setReplayClock, shortWhen, STRENGTH,
-  strengthBand, streetCase, tidy, todayStatus, wktToGeometry,
-  type AgentReply, type AskContext, type AskTurn, type Busiest, type Category, type Extent, type PennEvent, type View,
+  activeToday, answerHeadline, appNow, askAgent, category, extent, GROUND, HOOD, isMinor, isOver, MINOR_ZOOM, PARK, isListing, COLOR, daysAway, pinDataUrl, getEvents, getJSON, HIGHLIGHT, LABEL, LISTED_BY, listingWhere, locate, PINNED_NOW, realNow, ROAD, setReplayClock, shortWhen, STRENGTH,
+  strengthBand, streetCase, tidy, todayStatus, wktToGeometry, forgetRole, savedRole,
+  type AgentReply, type AskContext, type AskTurn, type Busiest, type Category, type Extent, type PennEvent, type Role, type View,
 } from "@/lib/api";
 
 // MapLibre 6 is ESM-only and cannot find its worker inside a bundle: this exact `new URL(...)` form is what
@@ -23,8 +24,12 @@ const STYLE = "https://tiles.openfreemap.org/styles/positron";
 // Center City, river to river and Spring Garden to South St.
 const CENTER_CITY: [[number, number], [number, number]] = [[-75.1830, 39.9415], [-75.1415, 39.9620]];
 // The answer's records lit on the map: its citations, then what the place search found there, biggest first.
-const MAX_CITED_ON_MAP = 60;
-const DATA_LAYERS = ["listings", "full", "lane", "sidewalk", "parking", "points", "points-minor", "cited-line"];
+// Enough for an event's whole latest route (a Marathon edition is ~60 blocks) beside the notices the answer cites.
+const MAX_CITED_ON_MAP = 80;
+// Hover and click look at the city's layers and at every layer an answer's records are drawn on: the late records
+// (cite-late-line) and sidewalk ones (cited-walk) are not on cited-line.
+const DATA_LAYERS = ["listings", "full", "lane", "sidewalk", "parking", "points", "points-minor", "cited-line", "cited-walk",
+  "cite-late-line", "cited-point"];
 // Lines by how much of the street they take, heaviest first; a no-parking curb line last.
 const LINE_RANK = (e: PennEvent) => (category(e) === "parking" ? 3 : { full: 0, lane: 1, sidewalk: 2 }[extent(e)]);
 const PIN_ICON = "penn-pin";
@@ -81,6 +86,14 @@ const hoverWidth = (lo: number, hi: number) =>
 // Lines by name, not "not a point": a line layer given an event listed at several places (a MultiPoint) draws its
 // stops joined into one long line.
 const isLine = ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]] as maplibregl.FilterSpecification;
+// An answer's lines by how much of the street they take, as the city's layers draw them (full, lane, sidewalk).
+const isWalk = ["==", ["get", "ext"], "sidewalk"] as maplibregl.ExpressionSpecification;
+const notWalk = ["!=", ["get", "ext"], "sidewalk"] as maplibregl.ExpressionSpecification;
+// Zoom outermost (MapLibre allows ["zoom"] only there), the extent inside: a full closure's width, else one lane's.
+const byExtent = (full: [number, number], lane: [number, number]) => ["interpolate", ["linear"], ["zoom"],
+  12, ["match", ["get", "ext"], "full", full[0], lane[0]], 17, ["match", ["get", "ext"], "full", full[1], lane[1]]] as maplibregl.ExpressionSpecification;
+const CITED_WIDTH = byExtent([3.5, 9], [1.8, 4.5]);
+const CITED_EDGE = byExtent([5.5, 13], [3.4, 7]);
 const isPoint = ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]] as maplibregl.FilterSpecification;
 const ofCat = (c: Category) => ["all", isLine, ["==", ["get", "cat"], c]] as maplibregl.FilterSpecification;
 // A closure line of any reason at one weight (no-parking curb lines have their own layer).
@@ -114,9 +127,9 @@ function range(days: number): { start: string; end: string } {
   return { start: now.toISOString(), end: new Date(now.getTime() + days * 864e5).toISOString() };
 }
 
-// Replay: a month of the city's records on a time slider, opening on its busiest day (/busiest). October 2026 is
-// the month the demo snapshot covers; NEXT_PUBLIC_PENN_REPLAY_MONTH picks another.
-const REPLAY_MONTH = process.env.NEXT_PUBLIC_PENN_REPLAY_MONTH || "2026-10";
+// Replay: the last 30 days of the city's records on a time slider, through today, opening on their busiest day
+// (/busiest). Never later than today: permits not yet filed would leave a future day incomplete.
+const REPLAY_DAYS = 30;
 const REPLAY_AHEAD_DAYS = 7;   // records up to a week ahead of the slider fade in, as in the "7 days" view
 // One step of the slider: a day. 12 or 8 hours also work (the step must divide a day); the map then shows what
 // is in effect at any time in that step.
@@ -132,10 +145,14 @@ function phillyMidnight(day: string): number {
   return utc - Number(/GMT([+-]\d+)/.exec(name)?.[1] ?? -5) * 3600e3;
 }
 
+/** A YYYY-MM-DD so many days later (or earlier). */
+const addDays = (day: string, n: number) => new Date(Date.parse(`${day}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
+
+/** Whole Philadelphia days from 30 days ago through today (the pinned demo day in a snapshot): the slider's last
+ *  step is today, and `endDay` (tomorrow) is exclusive. */
 function replaySpan(): { start: number; end: number; startDay: string; endDay: string } {
-  const [y, m] = REPLAY_MONTH.split("-").map(Number);
-  const startDay = `${y}-${String(m).padStart(2, "0")}-01`;
-  const endDay = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+  const today = realNow().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const startDay = addDays(today, -REPLAY_DAYS), endDay = addDays(today, 1);
   return { start: phillyMidnight(startDay), end: phillyMidnight(endDay), startDay, endDay };
 }
 
@@ -238,8 +255,41 @@ const reduceMotion = () => typeof window !== "undefined" && window.matchMedia("(
 // source's lineMetrics): yellow up to p of the way, clear past it, so moving p from 0 to 1 draws the stroke from
 // the line's start to its end.
 const HL_CLEAR = "rgba(255, 212, 59, 0)";
-const stroke = (p: number) => (p >= 1 ? ["interpolate", ["linear"], ["line-progress"], 0, HIGHLIGHT, 1, HIGHLIGHT]
-  : ["step", ["line-progress"], HIGHLIGHT, Math.max(p, 1e-4), HL_CLEAR]) as maplibregl.ExpressionSpecification;
+const stroke = (p: number, ink = HIGHLIGHT, clear = HL_CLEAR) => (p >= 1 ? ["interpolate", ["linear"], ["line-progress"], 0, ink, 1, ink]
+  : ["step", ["line-progress"], ink, Math.max(p, 1e-4), clear]) as maplibregl.ExpressionSpecification;
+// The selected record's dark outline (selected-halo), drawn along the street like the highlighter.
+const INK = "#1B2433", INK_CLEAR = "rgba(27, 36, 51, 0)";
+
+/** A record's blocks often come as separate pieces (a MultiLineString), each with its own line-progress, so a
+ *  stroke along them starts on every piece at once and seems to begin mid-street. Pieces that meet end to end
+ *  (within about 3 m) are joined into one line first, turned as needed, so the stroke runs from one end to the
+ *  other. Pieces that do not meet stay apart. */
+function joined(g: GeoJSON.Geometry): GeoJSON.Geometry {
+  if (g.type !== "MultiLineString") return g;
+  const meet = (a: GeoJSON.Position, b: GeoJSON.Position) => Math.abs(a[0] - b[0]) < 3e-5 && Math.abs(a[1] - b[1]) < 3e-5;
+  const left = g.coordinates.filter(part => part.length > 1).map(part => [...part]);
+  const lines: GeoJSON.Position[][] = [];
+  while (left.length) {
+    let line = left.shift()!;
+    for (let grew = true; grew;) {
+      grew = false;
+      for (let i = 0; i < left.length; i++) {
+        const part = left[i], start = line[0], end = line[line.length - 1];
+        if (meet(end, part[0])) line = [...line, ...part.slice(1)];
+        else if (meet(end, part[part.length - 1])) line = [...line, ...[...part].reverse().slice(1)];
+        else if (meet(start, part[part.length - 1])) line = [...part, ...line.slice(1)];
+        else if (meet(start, part[0])) line = [...[...part].reverse(), ...line.slice(1)];
+        else continue;
+        left.splice(i, 1);
+        grew = true;
+        break;
+      }
+    }
+    lines.push(line);
+  }
+  return lines.length === 1 ? { type: "LineString", coordinates: lines[0] } : { type: "MultiLineString", coordinates: lines };
+}
+const joinedFeatures = (fs: GeoJSON.Feature[]) => fs.map(f => ({ ...f, geometry: joined(f.geometry) }));
 const NONE = ["==", ["get", "event_id"], ""] as maplibregl.FilterSpecification;
 // Slow enough to be seen along a single short block: the arrival's stroke, a citation's replay, and the moment the
 // citation numbers glow (as the arrival's stroke is mostly drawn).
@@ -296,7 +346,7 @@ export default function Page() {
 
   const [win, setWin] = useState<MapWindow>(7);
   const [answerSpan, setAnswerSpan] = useState<Span | null>(null);
-  const [busyDays, setBusyDays] = useState<Busiest | null>(null);           // the replay month's days, by how busy
+  const [busyDays, setBusyDays] = useState<Busiest | null>(null);           // the replay's 30 days, by how busy
   const [replayAt, setReplayAt] = useState<number | null>(null);    // the slider's time, ms
   const [playing, setPlaying] = useState(false);
   const [events, setEvents] = useState<PennEvent[]>([]);
@@ -307,6 +357,11 @@ export default function Page() {
   const [loaded, setLoaded] = useState<Record<string, string>>({});   // source -> last successful load (p4-04)
 
   const [question, setQuestion] = useState("");
+  // The judge gate (components/RoleGate.tsx): undefined until this browser's saved choice is read, so the page as
+  // first served, and with JavaScript off, shows the gate. The server checks the judge code on every question.
+  const [role, setRole] = useState<Role | null | undefined>(undefined);
+  const [gateNotice, setGateNotice] = useState("");
+  useEffect(() => setRole(savedRole()?.role ?? null), []);
   const [asked, setAsked] = useState("");
   const sent = useRef<string[]>([]);   // questions already asked, oldest first; Up and Down walk them
   // The conversation PENN remembers: the last few exchanges and the place and window the last answer
@@ -490,8 +545,10 @@ export default function Page() {
     if (!m || !m.getSource("events")) return;
     const seq = ++loadSeq.current;
     const replay = winRef.current === "replay" ? replaySpan() : null;
+    // Records up to a week past today come too, to fade in at the slider's right edge as on the days before it.
     const span: Span | null = replay
-      ? { start: new Date(replay.start).toISOString(), end: new Date(replay.end).toISOString(), label: REPLAY_MONTH }
+      ? { start: new Date(replay.start).toISOString(), end: new Date(replay.end + REPLAY_AHEAD_DAYS * 864e5).toISOString(),
+          label: `Last ${REPLAY_DAYS} days` }
       : winRef.current === "answer" ? answerSpanRef.current : null;
     const w = span ?? (typeof winRef.current === "number" ? winRef.current : 7);
     setMapLoading(true);
@@ -522,13 +579,30 @@ export default function Page() {
       .finally(() => { if (seq === loadSeq.current) setMapLoading(false); });
   }, [fetchCity, countInView, drawCity]);
 
+  // A picked record's outline is drawn along its street from one end to the other once the camera is still,
+  // and a picked pin's ring fades in, instead of both appearing at once.
+  const stopHalo = useRef<() => void>(() => {});
+  const drawSelected = useCallback((features: GeoJSON.Feature[]) => {
+    const m = map.current;
+    if (!m?.getLayer("selected-halo")) return;
+    stopHalo.current();
+    m.setPaintProperty("selected-halo", "line-gradient", stroke(0, INK, INK_CLEAR));
+    m.setPaintProperty("selected-point", "circle-stroke-opacity", 0);
+    (m.getSource("selected") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features: joinedFeatures(features) });
+    const go = () => {
+      m.setPaintProperty("selected-point", "circle-stroke-opacity", 1);
+      stopHalo.current = animate(TRACE_MS, p => m.setPaintProperty("selected-halo", "line-gradient", stroke(p, INK, INK_CLEAR)));
+    };
+    if (m.isMoving()) m.once("moveend", go); else go();
+  }, []);
+  const drawSelectedRef = useRef(drawSelected); drawSelectedRef.current = drawSelected;
+
   const select = useCallback((e: PennEvent, opts: { focus?: boolean } = {}) => {
     setSelected(e);
     setPanelOpen(true);
     setDetailError("");
     const m = map.current;
     const features = toFeatures([e]);
-    (m?.getSource("selected") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features });
     if (opts.focus && m) {
       const b = boundsOf(features);
       const view = m.getBounds();
@@ -537,12 +611,13 @@ export default function Page() {
         fly(b, 17);
       }
     }
+    drawSelected(features);
     setDetailLoading(true);
     getJSON<PennEvent>(`/events/${encodeURIComponent(e.event_id)}`)
       .then(full => { known.current.set(full.event_id, full); setSelected(cur => cur?.event_id === full.event_id ? full : cur); })
       .catch(err => setDetailError(`Showing the copy loaded with the map; could not refresh it: ${err.message}.`))
       .finally(() => setDetailLoading(false));
-  }, [fly]);
+  }, [fly, drawSelected]);
 
   const closePanel = useCallback(() => {
     setPanelOpen(false);
@@ -568,7 +643,7 @@ export default function Page() {
       const empty: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
       m.addSource("events", { type: "geojson", data: empty, promoteId: "event_id" });
       m.addSource("cited", { type: "geojson", data: empty, lineMetrics: true });   // line-progress, for the stroke
-      m.addSource("selected", { type: "geojson", data: empty });
+      m.addSource("selected", { type: "geojson", data: empty, lineMetrics: true });   // line-progress, for its outline
       const pin = new Image(PIN_PX.w, PIN_PX.h);
       pin.onload = () => { if (!m.hasImage(PIN_ICON)) m.addImage(PIN_ICON, pin, { pixelRatio: PIN_PX.ratio }); };
       pin.src = pinDataUrl(PIN_PX.w, PIN_PX.h);
@@ -657,7 +732,7 @@ export default function Page() {
       add({ id: "cite-trace", type: "line", source: "cited", filter: NONE, layout: round,
         paint: { "line-gradient": stroke(1), "line-width": zoomWidth(12, 30), "line-opacity": 0.85, "line-blur": 1 } });
       add({ id: "selected-halo", type: "line", source: "selected", filter: isLine, layout: round,
-        paint: { "line-color": "#1B2433", "line-width": zoomWidth(9, 18), "line-opacity": 0.9 } });
+        paint: { "line-gradient": stroke(1, INK, INK_CLEAR), "line-width": zoomWidth(9, 18), "line-opacity": 0.9 } });
       // Color says why (REASON_COLOR), weight says how much of the street: dots for the sidewalk, a thin line for one
       // lane, a thick white-edged line for the full street. Lightest first, so a full closure draws over a sidewalk
       // permit on the same block. The minor kinds start at MINOR_ZOOM (lib/api.ts), so the whole-city view shows the
@@ -676,15 +751,21 @@ export default function Page() {
         paint: { "line-opacity": todayOpacity, "line-color": "#ffffff", "line-width": zoomWidth(5.5, 13) } });
       add({ id: "full", type: "line", source: "events", filter: ofExtent("full"), layout: fullOrder,
         paint: { "line-opacity": todayOpacity, "line-color": REASON_COLOR, "line-width": hoverWidth(3.5, 9) } });
-      // The answer's own lines over every city layer, a little heavier than the rest, so a cited line still reads
-      // clearly on its highlighter stroke.
-      add({ id: "cited-line", type: "line", source: "cited", filter: isLine, layout: round,
-        paint: { "line-opacity": todayOpacity, "line-color": ["get", "color"], "line-width": zoomWidth(3.5, 8),
-          "line-opacity-transition": { duration: reduceMotion() ? 0 : 300 } } });
+      // The answer's own lines over every city layer, in the same weights as the city's (CITED_WIDTH): thick for a
+      // closed street, thin for one lane, dots for the sidewalk, at every zoom, so the extent still reads under the
+      // highlighter. A white edge under the closed and one-lane lines keeps them clear of the yellow.
+      const fade = { "line-opacity-transition": { duration: reduceMotion() ? 0 : 300 } };
+      add({ id: "cited-casing", type: "line", source: "cited", filter: ["all", isLine, notWalk] as maplibregl.FilterSpecification, layout: round,
+        paint: { "line-opacity": todayOpacity, "line-color": "#ffffff", "line-width": CITED_EDGE, ...fade } });
+      add({ id: "cited-line", type: "line", source: "cited", filter: ["all", isLine, notWalk] as maplibregl.FilterSpecification, layout: round,
+        paint: { "line-opacity": todayOpacity, "line-color": ["get", "color"], "line-width": CITED_WIDTH, ...fade } });
+      add({ id: "cited-walk", type: "line", source: "cited", filter: ["all", isLine, isWalk] as maplibregl.FilterSpecification,
+        layout: { "line-cap": "round" },
+        paint: { "line-opacity": todayOpacity, "line-color": ["get", "color"], "line-width": zoomWidth(2.4, 5),
+          "line-dasharray": [0.05, 2], ...fade } });
       // The late records' own lines, apart so they can fade in under their stroke while the first ones stay.
       add({ id: "cite-late-line", type: "line", source: "cited", filter: NONE, layout: round,
-        paint: { "line-opacity": 0, "line-color": ["get", "color"], "line-width": zoomWidth(3.5, 8),
-          "line-opacity-transition": { duration: reduceMotion() ? 0 : 300 } } });
+        paint: { "line-opacity": 0, "line-color": ["get", "color"], "line-width": CITED_WIDTH, ...fade } });
       const dot: maplibregl.CircleLayerSpecification["paint"] = { "circle-opacity": todayOpacity, "circle-stroke-opacity": todayOpacity,
         "circle-color": REASON_COLOR, "circle-radius": zoomWidth(3.5, 7), "circle-stroke-color": "#fff", "circle-stroke-width": 1.5 };
       const isDot = ["==", ["geometry-type"], "Point"] as maplibregl.ExpressionSpecification;
@@ -726,7 +807,8 @@ export default function Page() {
         paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": 8, "circle-stroke-color": "#F2B705", "circle-stroke-width": 2.5,
           "circle-stroke-opacity": 0 } });
       m.addLayer({ id: "selected-point", type: "circle", source: "selected", filter: isPoint,
-        paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": zoomWidth(8, 12), "circle-stroke-color": "#1B2433", "circle-stroke-width": 2.5 } });
+        paint: { "circle-color": "rgba(0,0,0,0)", "circle-radius": zoomWidth(8, 12), "circle-stroke-color": "#1B2433", "circle-stroke-width": 2.5,
+          "circle-stroke-opacity-transition": { duration: reduceMotion() ? 0 : 240 } } });
       m.addLayer({ id: "listings", type: "symbol", source: "events", filter: ["in", ["get", "cat"], ["literal", ["listing", "ticketed"]]],
         layout: { "icon-image": ["match", ["get", "cat"], "ticketed", TICKET_ICON, PIN_ICON], "icon-anchor": "bottom", "icon-offset": [0, PIN_PX.tipY],
           "icon-allow-overlap": true, "icon-ignore-placement": true, "symbol-sort-key": ["-", 0, ["get", "days"]] },   // today's on top
@@ -757,7 +839,12 @@ export default function Page() {
         seen.add(id);
         const e = known.current.get(id);
         return e ? [e] : [];
-      }).sort((a, b) => pickOrder(a) - pickOrder(b) || byWhen(a, b));
+      });
+      // While an answer is open, its records come before the greyed ones under them: a closure in effect today
+      // must not answer for the cited route drawn over it.
+      const cited = new Set(focusRef.current ?? []);
+      const outside = (e: PennEvent) => (cited.size && !cited.has(e.event_id) ? 1 : 0);
+      found.sort((a, b) => outside(a) - outside(b) || pickOrder(a) - pickOrder(b) || byWhen(a, b));
       // On a pin or dot, only the markers under the cursor count: the street line beneath is not what was aimed at.
       return found.length && pickOrder(found[0]) < 2 ? found.filter(e => pickOrder(e) < 2) : found;
     };
@@ -784,7 +871,7 @@ export default function Page() {
       setChoicesRange(null);
       setSelected(null);
       setPanelOpen(true);
-      (m.getSource("selected") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features: toFeatures(h) });
+      drawSelectedRef.current(toFeatures(h));
     });
     let t: ReturnType<typeof setTimeout>;
     m.on("moveend", () => { clearTimeout(t); t = setTimeout(countInView, 150); });
@@ -802,7 +889,7 @@ export default function Page() {
     countInView();
   }, [win, replayAt, drawCity, countInView]);
 
-  // Play: a step at a time to the month's end. Leaving the replay stops it and gives the map its own clock back.
+  // Play: a step at a time to today. Leaving the replay stops it and gives the map its own clock back.
   useEffect(() => {
     if (!playing || win !== "replay") return;
     const { end } = replaySpan();
@@ -819,7 +906,7 @@ export default function Page() {
     if (replaying.current) { replaying.current = false; setReplayClock(null); }
   }, [win]);
 
-  /** Open the replay: the month's busy days first (for the bars and the opening day), then its records. */
+  /** Open the replay: the busy days of the last 30 first (for the bars and the opening day), then its records. */
   const startReplay = useCallback(() => {
     const { startDay, endDay } = replaySpan();
     busyReq.current ??= getJSON<Busiest>(`/busiest?start=${startDay}&end=${endDay}`)
@@ -888,18 +975,19 @@ export default function Page() {
     // Each record goes into known as it arrives, and the card redraws (known is a ref), so the headline and the
     // citations' titles need not wait for the slowest record either.
     // Most of them are on the map already (the city layer for these dates): taken from there at once, the rest
-    // fetched.
+    // fetched together in one request (an event's past routes are never on the map: dozens of records).
     const onMap = new Map(cityEvents.current.map(e => [e.event_id, e]));
-    const load = (some: string[]) => Promise.all(some.map(id =>
-      known.current.get(id) ?? onMap.get(id) ?? getJSON<PennEvent>(`/events/${encodeURIComponent(id)}`)
-        .then(e => { known.current.set(e.event_id, e); setCitedLoaded(n => n + 1); return e; }).catch(() => null)))
-      .then(got => {
-        const evs = got.filter((e): e is PennEvent => !!e);
-        evs.forEach(e => known.current.set(e.event_id, e));
-        return evs;
-      });
+    const load = async (some: string[]) => {
+      const have = (id: string) => known.current.get(id) ?? onMap.get(id);
+      const got = await getEvents(some.filter(id => !have(id))).catch(() => [] as PennEvent[]);
+      got.forEach(e => known.current.set(e.event_id, e));
+      if (got.length) setCitedLoaded(n => n + 1);
+      const evs = some.flatMap(id => have(id) ?? []);
+      evs.forEach(e => known.current.set(e.event_id, e));
+      return evs;
+    };
     const draw = (evs: PennEvent[]) => {
-      const features = toFeatures(evs).map(f => ({ ...f, properties: { ...f.properties, color: COLOR[f.properties!.cat as Category] } }));
+      const features = joinedFeatures(toFeatures(evs)).map(f => ({ ...f, properties: { ...f.properties, color: COLOR[f.properties!.cat as Category] } }));
       (m?.getSource("cited") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features });
       return features;
     };
@@ -944,8 +1032,10 @@ export default function Page() {
     const not = (ids: string[] | null) => (ids?.length ? [["!", among(ids)]] : []) as maplibregl.ExpressionSpecification[];
     const all = (...f: unknown[]) => ["all", ...f] as maplibregl.FilterSpecification;
     m.setFilter("cited-glow", all(isLine, ...not(late.current), ...not(pointed.current)));
-    m.setFilter("cited-line", all(isLine, ...not(late.current)));
-    m.setFilter("cite-late-line", late.current.length ? all(isLine, among(late.current)) : NONE);
+    m.setFilter("cited-casing", all(isLine, notWalk));
+    m.setFilter("cited-line", all(isLine, notWalk, ...not(late.current)));
+    m.setFilter("cited-walk", all(isLine, isWalk));
+    m.setFilter("cite-late-line", late.current.length ? all(isLine, notWalk, among(late.current)) : NONE);
     m.setFilter("cite-late", late.current.length ? all(isLine, among(late.current), ...not(pointed.current)) : NONE);
     m.setFilter("cite-trace", pointed.current ? all(isLine, among(pointed.current)) : NONE);
   }
@@ -958,8 +1048,7 @@ export default function Page() {
     late.current = [];
     setFilters();
     m.setPaintProperty("cited-glow", "line-gradient", stroke(0));
-    m.setPaintProperty("cited-line", "line-opacity", 0);
-    m.setPaintProperty("cite-late-line", "line-opacity", 0);
+    ["cited-casing", "cited-line", "cited-walk", "cite-late-line"].forEach(id => m.setPaintProperty(id, "line-opacity", 0));
     m.setPaintProperty("cited-point", "circle-opacity", 0);
     stopRing.current();
     m.setPaintProperty("cite-ring", "circle-stroke-opacity", 0);
@@ -969,7 +1058,7 @@ export default function Page() {
     const m = map.current;
     if (!m?.getLayer("cited-glow") || arrived.current) return;
     arrived.current = true;
-    m.setPaintProperty("cited-line", "line-opacity", todayOpacity);
+    ["cited-casing", "cited-line", "cited-walk"].forEach(id => m.setPaintProperty(id, "line-opacity", todayOpacity));
     m.setPaintProperty("cited-point", "circle-opacity", 0.85);
     stopStroke.current();
     stopStroke.current = animate(STROKE_MS, p => m.setPaintProperty("cited-glow", "line-gradient", stroke(p)));
@@ -1060,7 +1149,10 @@ export default function Page() {
     } catch (err) {
       if (stale()) return;
       setStatus("error");
-      setReply({ message: `PENN could not answer: ${(err as Error).message}. Check that the PENN API is running, then ask again.` });
+      const e = err as Error & { limited?: boolean; badCode?: boolean };
+      if (e.badCode) { forgetRole(); setGateNotice(e.message); setRole(null); }   // a stale or wrong judge code
+      setReply({ message: e.limited ? e.message
+        : `PENN could not answer: ${e.message}. Check that the PENN API is running, then ask again.` });
       setQuestion(cur => cur || q);   // give the question back so asking again is one click
     }
   }
@@ -1105,17 +1197,17 @@ export default function Page() {
   // A run of citations ("6–16") opens as a list in the panel, like several records under one click.
   const [choicesRange, setChoicesRange] = useState<[number, number] | null>(null);
   const onCites = (ids: string[]) => {
-    Promise.all(ids.map(id => known.current.get(id) ?? getJSON<PennEvent>(`/events/${encodeURIComponent(id)}`)
-      .then(full => { known.current.set(full.event_id, full); return full; }).catch(() => null)))
-      .then(found => {
-        const recs = found.filter((e): e is PennEvent => !!e);
+    getEvents(ids.filter(id => !known.current.has(id))).catch(() => [] as PennEvent[])
+      .then(got => {
+        got.forEach(full => known.current.set(full.event_id, full));
+        const recs = ids.flatMap(id => known.current.get(id) ?? []);
         if (!recs.length) return;
         const features = toFeatures(recs);
         setChoices(recs);
         setChoicesRange([citedNumber(ids[0]), citedNumber(ids[ids.length - 1])]);
         setSelected(null);
         setPanelOpen(true);
-        (map.current?.getSource("selected") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features });
+        drawSelected(features);
         const b = boundsOf(features);
         if (b) { panelOpenRef.current = true; fly(b, 17); }
       });
@@ -1138,8 +1230,12 @@ export default function Page() {
   const citedNumber = (id: string) => order.indexOf(id) + 1;
   const busy = status === "locating" || status === "reading";
   const hasSheet = status !== "idle";
-  const kindNote = reply?.window_kind === "future" ? "Upcoming permits may not be filed yet."
+  const dateNote = reply?.window_kind === "future" ? "Upcoming permits may not be filed yet."
     : reply?.window_kind === "past" ? "Past dates: this is what the records show was permitted." : "";
+  // The public demo reuses an answer to a question already asked; say when it was first given.
+  const savedNote = reply?.cached_at ? `Answered earlier, ${new Date(reply.cached_at).toLocaleString("en-US",
+    { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}.` : "";
+  const kindNote = [dateNote, savedNote].filter(Boolean).join(" ");
   const when = reply?.window ?? place?.window ?? "";
   // The headline waits for every cited record to be loaded, so it never counts half of them.
   const citedRecs = order.map(id => known.current.get(id));
@@ -1164,7 +1260,7 @@ export default function Page() {
             </button>
           ))}
           <button type="button" role="radio" className="seg-replay" aria-checked={win === "replay"} aria-label="Replay"
-            title="Move the map through the month, opening on its busiest day" onClick={startReplay}>
+            title="Move the map through the last 30 days, opening on the busiest" onClick={startReplay}>
             <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6.5" r="4.6" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M6 4v2.6l1.7 1.1M4.6 1h2.8" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
             <span className="seg-long">Replay</span>
           </button>
@@ -1180,7 +1276,7 @@ export default function Page() {
 
       {replayCard && (() => {
         const { start, end } = replaySpan();
-        // Until the month's records are in, the bar stands on the busiest day, waiting.
+        // Until the 30 days' records are in, the bar stands on the busiest day, waiting.
         const at = replayAt ?? (busyDays?.busiest ? phillyMidnight(busyDays.busiest) : start);
         return (
           <ReplayBar leaving={replayCard === "out"} start={start} end={end} step={REPLAY_STEP} days={busyDays?.days ?? []} busiest={busyDays?.busiest ?? null}
@@ -1245,7 +1341,7 @@ export default function Page() {
                   )}
                 </div>
               )}
-              {sheetOpen && reply?.answer && <GuardLine guard={reply.guard ?? null} note={kindNote} />}
+              {sheetOpen && reply?.answer && <GuardLine guard={reply.guard ?? null} note={kindNote} model={reply.model} />}
             </section>
           )}
           <Legend counts={counts} bands={bands} citedCount={citedIds.length} hoods={showHoods} onHoods={setShowHoods}
@@ -1271,7 +1367,7 @@ export default function Page() {
             <div className="ask-field">
               <input id="q" ref={inputRef} value={question} onChange={e => { sentAt.current = -1; setQuestion(e.target.value); }}
                 onKeyDown={recall} autoComplete="off"
-                placeholder={pin ? "Ask about the pinned point" : narrow ? "Ask about streets, events or closures" : ""} />
+                placeholder={pin ? "Ask about the pinned point" : narrow ? "Ask about a street or event" : ""} />
               {/* The empty box's hint, with its example rolling up to the next every few seconds: a placeholder
                   attribute can't animate, so this sits over the input and lets clicks through. */}
               {rolling && (
@@ -1299,6 +1395,8 @@ export default function Page() {
               <button type="button" className="fine-about" aria-expanded={aboutOpen} aria-controls="about"
                 aria-label="About, sources and privacy" onClick={() => setAboutOpen(o => !o)}>
                 About<span className="fine-long">, sources and privacy</span></button>
+              {role === "visitor" && <>{" · "}<button type="button" className="fine-about"
+                onClick={() => { forgetRole(); setGateNotice(""); setRole(null); }}>Judge access</button></>}
             </span>
             {/* Map credits. OpenStreetMap asks for visible credit; the neighborhood outlines are CC BY 4.0,
                 which requires naming their author. */}
@@ -1329,15 +1427,31 @@ export default function Page() {
               href="https://www.ticketmaster.com/" target="_blank" rel="noopener">Ticketmaster</a> listings, and web
               pages found with <a href="https://www.tavily.com/" target="_blank" rel="noopener">Tavily</a> search
               when PENN has no record.</p>
+            <h3>Built with</h3>
+            <p>Answers are written by NVIDIA Nemotron 3 Super, served by <a href="https://tokenfactory.nebius.com/"
+              target="_blank" rel="noopener">Nebius Token Factory</a>. When PENN has no record, the web is searched
+              with <a href="https://www.tavily.com/" target="_blank" rel="noopener">Tavily</a>. Map tiles by <a
+              href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> © <a
+              href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> © <a
+              href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>;
+              neighborhood outlines © <a href="https://opendataphilly.org/datasets/philadelphia-neighborhoods/"
+              target="_blank" rel="noopener">Robert Cheetham</a>, <a href="https://creativecommons.org/licenses/by/4.0/"
+              target="_blank" rel="noopener">CC BY 4.0</a>.</p>
             <h3>Privacy</h3>
             {/* Tavily may keep and use the search terms it receives (its terms 6.5, 9.2); penn/web/tavily.py
                 sends only a short query or an event name and year, never the question itself. */}
             <p>PENN sets no cookies and shows no ads. Questions you ask are sent to NVIDIA Nemotron on Nebius to
               answer them. When PENN has no record, a short web search (an event&apos;s name and year, or a few
               words on what you asked, never your question itself) is sent to Tavily, which may keep it.</p>
+            <p>This browser remembers whether you chose Judge or Visitor (and a judge&apos;s access code) in its own
+              storage. To keep the demo within its limits, PENN counts questions per day; that count never includes
+              what you asked or your address.</p>
           </section>
         )}
       </div>
+      {role !== "judge" && role !== "visitor" && (
+        <RoleGate notice={gateNotice} onEnter={(r, q) => { setGateNotice(""); setRole(r); if (q) ask(q, null); }} />
+      )}
     </main>
   );
 }

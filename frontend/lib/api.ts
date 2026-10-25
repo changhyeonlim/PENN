@@ -29,6 +29,7 @@ export type AgentReply = {
   web?: { id: string; title: string; url: string; site: string }[];   // web pages the answer cites (p5-09)
   landmarks?: { name: string; point: [number, number]; bounds: [[number, number], [number, number]] }[];   // p3-10
   guard?: Guard | null;          // what the checks vouch for; null when there is no answer
+  cached_at?: string;            // the public demo served a stored answer, first given at this time (ISO)
 };
 
 /** The hallucination guard behind an answer: records cited (each matched to this turn's tool results),
@@ -38,14 +39,58 @@ export type Guard = { cited: number; resolved_in_code: boolean; sent_back: { kin
 export async function getJSON<T>(path: string, init?: RequestInit): Promise<T> {
   // fetch rejects with a bare "Failed to fetch" when nothing answers; say which server is missing.
   const r = await fetch(`${API}${path}`, init).catch(() => { throw new Error(`the PENN API at ${API} is not reachable`); });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.detail ?? `Request failed (${r.status})`);
+  if (!r.ok) {
+    const detail = (await r.json().catch(() => ({})))?.detail ?? `Request failed (${r.status})`;
+    // 401/404/413/429/503: the public demo's guardrails (penn/guardrails.py), whose message is meant to be shown
+    // as is. 401: the judge code was refused, so the page forgets it and asks again.
+    throw Object.assign(new Error(detail), { limited: [401, 404, 413, 429, 503].includes(r.status), badCode: r.status === 401 });
+  }
   return r.json();
 }
+
+/** Several records in one request (POST /events), in the order asked; ids PENN has no record of are left out. */
+export function getEvents(ids: string[]): Promise<PennEvent[]> {
+  return ids.length ? getJSON<PennEvent[]>("/events", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }) }) : Promise.resolve([]);
+}
+
+// ---- the judge gate (components/RoleGate.tsx) ----
+// The role is only what this page shows: the server checks the judge code on every question, so editing these
+// or skipping the gate gets a visitor's allowance, never a judge's.
+export type Role = "judge" | "visitor";
+const ROLE_KEY = "penn.role", CODE_KEY = "penn.judgeCode";
+
+export function savedRole(): { role: Role; code: string } | null {
+  try {
+    const role = localStorage.getItem(ROLE_KEY);
+    if (role === "visitor") return { role, code: "" };
+    const code = localStorage.getItem(CODE_KEY) ?? "";
+    return role === "judge" && code ? { role, code } : null;
+  } catch { return null; }   // storage blocked (private mode): the gate simply shows again
+}
+
+export function saveRole(role: Role, code = "") {
+  try { localStorage.setItem(ROLE_KEY, role); if (code) localStorage.setItem(CODE_KEY, code); else localStorage.removeItem(CODE_KEY); }
+  catch { /* the choice lasts this visit only */ }
+}
+
+export function forgetRole() {
+  try { localStorage.removeItem(ROLE_KEY); localStorage.removeItem(CODE_KEY); } catch { /* nothing stored */ }
+}
+
+const judgeHeader = (): Record<string, string> => {
+  const r = savedRole();
+  return r?.role === "judge" ? { "X-PENN-Judge": r.code } : {};
+};
+
+/** Resolves when the server accepts the code; rejects with its message otherwise. */
+export const verifyJudge = (code: string) =>
+  getJSON<{ ok: boolean }>("/judge", { method: "POST", headers: { "X-PENN-Judge": code } });
 
 export const locate = (q: string) => getJSON<Located>(`/locate?q=${encodeURIComponent(q)}`);
 
 export const askAgent = (body: { question: string; lat?: number; lon?: number; history?: AskTurn[]; context?: AskContext | null }) =>
-  getJSON<AgentReply>("/agent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  getJSON<AgentReply>("/agent", { method: "POST", headers: { "Content-Type": "application/json", ...judgeHeader() }, body: JSON.stringify(body) });
 
 /** Parse the WKT the API returns into GeoJSON geometry (points and lines only). */
 export function wktToGeometry(wkt: string): GeoJSON.Geometry | null {
