@@ -141,27 +141,21 @@ rejects `[1]`), and the checks catch the rest. The code is in
 [`agent/loop.py`](backend/penn/agent/loop.py), [`agent/context.py`](backend/penn/agent/context.py) and
 [`agent/citations.py`](backend/penn/agent/citations.py).
 
-### Where Token Factory accelerated our workflow
+### Nebius
 
-- **One OpenAI-compatible base URL, unchanged client.** The stock `openai` Python client worked as-is,
-  tool calls included. Switching models is one string.
-- **Model choice became an experiment, not a guess.** We lined up **10 models in 3 size brackets**
-  (Nemotron 3 Nano, Nemotron 3.5 Lightning, Nemotron 3 Super and Ultra, plus same-size peers) behind the
-  same agent code and questions, with no per-provider glue. That is how we chose Super ([Choosing the
-  model](#choosing-the-model)).
-- **Fast iteration loops.** The eval sends 4 questions at a time, so a full 58-question run takes
-  minutes. Every prompt or code fix was checked for regressions before it shipped.
-- **Production inference.** The live demo calls Token Factory for every question. A typical answer
-  costs **under 1¢** at list prices ($0.30 in / $0.90 out per 1M tokens), and per-question token and time
-  ceilings cap the worst case ([`guardrails.py`](backend/penn/guardrails.py)).
+**Token Factory is how PENN reaches Nemotron.** Every Ask PENN answer, and every eval run, is a request
+to Token Factory's OpenAI-compatible API for `nvidia/nemotron-3-super-120b-a12b`, sent with the stock
+`openai` Python client.
 
-### Other Nebius tools and services
+**Where it sped up our work:** Token Factory serves many models behind the same API, so trying a different
+model meant changing one string. That's how we ran Nemotron 3.5 Lightning, Super and Ultra on the same
+questions before choosing Super ([Choosing the model](#choosing-the-model)).
 
-| Service | How PENN uses it |
-|---|---|
-| **Nebius Token Factory** | Every Ask PENN answer, and every eval run |
-| **Tavily** (by Nebius) | Web search, only when PENN's own records have nothing. Each result becomes a record PENN can cite. Results are cached. |
-| **Nebius AI Cloud** (Serverless Endpoints, Container Registry) | We built PENN as one container for Serverless Endpoints ([`deploy/endpoint.Dockerfile`](deploy/endpoint.Dockerfile)). Our CPU quota wasn't granted before the deadline, so the same image runs on AWS EC2 today. It's plain Docker, so it moves back without code changes. |
+**Tavily** (by Nebius) is the web search PENN falls back on when its own records have nothing.
+
+**Hosting is not on Nebius.** We requested Nebius AI Cloud CPU (non-GPU vCPU) quota to run the app's
+container. It wasn't granted, and Nebius support suggested using other available resources, so the app
+runs on AWS EC2.
 
 ---
 
@@ -513,7 +507,7 @@ City's street segment IDs, so a search at a corner catches the right blocks.
 | **The trip-brief answer key is out of date:** it expects the minor-permit counts from before the Oct 21 counting change, so every model fails that one fact | Update the six expected counts, then put trip briefs back in the comparison |
 | **The local picks and City closure notices are saved by hand each week**, so they can lag by days | We've asked the City's Office of Innovation & Technology and the guide's publisher about official feeds |
 | **Super's p90 varies from day to day** on the shared endpoint: 8.2 s on Oct 18, 16.4 s on Oct 28 | Per-question time ceilings on the live demo; the answer cache serves repeat questions instantly |
-| **One container on one VM**, on AWS while Nebius CPU quota is pending | The image is ready for Nebius Serverless Endpoints |
+| **One container on one VM** (AWS EC2) | It refreshes daily, and the image is plain Docker, so it can run on any host |
 | **The local sample city** covers Center City only, with made-up listings. Web search is off there, because the pinned clock reads only a search cache that isn't shipped. Re-running models on the eval needs the full frozen city, which isn't published. | Use the live demo for the whole city; re-score saved runs locally |
 | **Not an official City of Philadelphia source** | The footer of every screen says so |
 
