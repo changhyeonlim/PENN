@@ -20,12 +20,12 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 RECORDS = HERE / "records"
-TYPES = {"lookup", "specific", "negative", "trap", "multi_day", "street_history", "trip"}
+TYPES = {"lookup", "specific", "negative", "trap", "multi_day", "street_history", "trip", "place"}
 REQUIRED = ("id", "place", "cells", "start", "end", "window", "question", "type",
             "expect_ids", "must_say", "must_not_say", "trap", "source_query",
             "required_facts", "forbidden", "expected_tools")
 ID_IN_TEXT = re.compile(
-    r"\[id:|\b(?:lane_closures|event_closures|philly_311):|\bEUN\d+|\bG?\d{4}-\d{5}\b|\b\d{7,9}\b")
+    r"\[id:|\b(?:lane_closures|event_closures):|\bEUN\d+|\bG?\d{4}-\d{5}\b|\b\d{7,9}\b")
 
 
 def _load(name: str) -> dict:
@@ -63,10 +63,12 @@ def check(q: dict, closure_ids: set[str] | None = None) -> list[str]:
     elif not q["expect_ids"]:
         errs.append("non-negative question expects no IDs")
 
-    if q.get("answer_shape") not in (None, "brief", "full"):
-        errs.append(f"answer_shape {q['answer_shape']!r} is not brief or full")
+    if q.get("answer_shape") not in (None, "brief", "full", "place"):
+        errs.append(f"answer_shape {q['answer_shape']!r} is not brief, full or place")
     if q.get("difficulty") not in (None, "easy", "medium", "hard"):
         errs.append(f"difficulty {q['difficulty']!r} is not easy, medium or hard")
+    if q["type"] == "place" and q.get("answer_shape") != "place":
+        errs.append("place questions are answered with the place briefing")
     if q["type"] == "trip" and q.get("answer_shape") != "brief":
         errs.append("trip questions are answered with the brief")
     if q["type"] == "street_history":

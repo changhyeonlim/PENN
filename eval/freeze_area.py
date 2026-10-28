@@ -1,7 +1,8 @@
-"""Freeze search_events on a neighborhood or a picked point into eval/records/<slug>_<date>_area.json.
+"""Freeze search_events on a neighborhood, a landmark or a picked point into eval/records/<slug>_<date>_area.json.
 
     python eval/freeze_area.py "Rittenhouse" "Rittenhouse next week"
     python eval/freeze_area.py --pin -75.1503,39.9489 "What's going on around here this weekend?"
+    python eval/freeze_area.py "Rittenhouse Square" "What's happening in Rittenhouse Square on Sunday, October 25?"
 
 Trip questions ("Rittenhouse next week") get the brief answer, so the window is resolved from the
 question itself at the frozen copy's pinned time (penn_demo: 2026-10-17 10:00), exactly as the API
@@ -33,8 +34,8 @@ def freeze(question: str, area: str | None = None, pin: tuple[float, float] | No
     use_db(db)
     at = datetime.fromisoformat(now)
     loc = locate.from_click(*pin) if pin else locate.from_text(area or "")
-    if not loc.cells or (not pin and loc.method != "area"):
-        raise SystemExit(f"{area!r} did not resolve to a neighborhood ({loc.method})")
+    if not loc.cells or (not pin and loc.method not in ("area", "landmark")):
+        raise SystemExit(f"{area!r} did not resolve to a neighborhood or a landmark ({loc.method})")
     win = timeutil.resolve_window(question, at)
     if win is None:
         raise SystemExit(f"no time read in {question!r}")

@@ -119,8 +119,8 @@ def test_eval_answers_from_the_frozen_copy_by_default():
 
 def test_question_file_shapes_are_valid():
     for question in load_questions():
-        assert question.answer_shape in (None, "brief", "full"), question.id
-        assert question.place_method in ("eval", "area", "click", "intersection"), question.id
+        assert question.answer_shape in (None, "brief", "full", "place"), question.id
+        assert question.place_method in ("eval", "area", "click", "intersection", "landmark"), question.id
 
 
 def test_summary_counts_pass_rate_by_difficulty():
