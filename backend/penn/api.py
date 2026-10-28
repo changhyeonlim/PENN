@@ -1,4 +1,4 @@
-"""FastAPI app. The map and timeline endpoints work with no model in the loop."""
+"""FastAPI app. The map endpoints work with no model in the loop; /agent is Ask PENN."""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
@@ -87,16 +87,15 @@ MAP_LIMIT = 20_000
 def map_layer(min_lat: float | None = None, min_lon: float | None = None,
               max_lat: float | None = None, max_lon: float | None = None,
               start: str | None = None, end: str | None = None):
-    """Non-311 events active in the window, with their centroids. Without a box, the whole city: the
-    map loads it once per window and pans and counts on the client."""
+    """Events active in the window, with their centroids. Without a box, the whole city: the map loads
+    it once per window and pans and counts on the client."""
     s, e = (start, end) if start and end else _default_window()
     p = tools.window_params(s, e)
     box = None not in (min_lat, min_lon, max_lat, max_lon)
     where = "AND centroid_lat BETWEEN %(a)s AND %(b)s AND centroid_lon BETWEEN %(c)s AND %(d)s" if box else ""
     rows = db.query(
         f"""SELECT {tools.EVENT_FIELDS}, centroid_lat, centroid_lon, seg_ids FROM events FINAL
-            WHERE source != 'philly_311' {where}
-              AND {tools.ACTIVE_FILTER} LIMIT {MAP_LIMIT + 1}""",
+            WHERE {tools.ACTIVE_FILTER} {where} LIMIT {MAP_LIMIT + 1}""",
         {"a": min_lat, "b": max_lat, "c": min_lon, "d": max_lon, **p},
     )
     truncated, rows = len(rows) > MAP_LIMIT, rows[:MAP_LIMIT]
@@ -175,14 +174,6 @@ def event(event_id: str):
     if not rows:
         raise HTTPException(404, "No such event")
     return tools._jsonable(rows)[0]
-
-
-@app.get("/timeline")
-def timeline(lat: float, lon: float, years: int = 3):
-    loc = locate.from_click(lon, lat)
-    end = timeutil.now_local()
-    start = end.replace(year=end.year - years)
-    return tools.get_location_timeline(loc.cells, start.isoformat(), end.isoformat()) | {"place": loc.label}
 
 
 def _view(loc: locate.Resolved) -> dict | None:
@@ -288,10 +279,7 @@ def _answer(body: AskBody) -> dict:
                                "so PENN has no records to answer from."}
     ctx.add_message(body.question)
     ctx.add_previous(body.context)
-    try:
-        a = ask(body.question, ctx, history=[(t.question, t.answer) for t in body.history])
-    except NotImplementedError:
-        raise HTTPException(501, "Ask PENN is not built yet (penn/agent/loop.py).")
+    a = ask(body.question, ctx, history=[(t.question, t.answer) for t in body.history])
 
     place, win = ctx.last_place(), ctx.last_window()
     notes = []

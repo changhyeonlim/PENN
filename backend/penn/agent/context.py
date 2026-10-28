@@ -246,7 +246,7 @@ class Context:
                     "answer": timeutil.before_records_answer(win.label, self.records_start)}
         return self.places[place_id], win
 
-    def search_events(self, place_id: str, window_id: str, include_311: bool = False) -> dict:
+    def search_events(self, place_id: str, window_id: str) -> dict:
         """Every kind of record, as the pipeline always searched: a type filter chosen by the model hid
         the records that answered the question (a "construction" filter dropped the ADA ramps and bus
         shelters). Brief or full is chosen here from the message, not by the model."""
@@ -261,7 +261,7 @@ class Context:
         near = tools.NEAR.set(adjacent.box(place, adjacent.BLOCK_M) if detail == "place" else None)
         try:
             out = tools.search_events(place.loc.cells, win.window.start.isoformat(), win.window.end.isoformat(),
-                                      include_311=include_311, detail=detail, max_days=max_days)
+                                      detail=detail, max_days=max_days)
         finally:
             tools.NEAR.reset(near)
             tools.AREA.reset(area)
@@ -474,7 +474,6 @@ KIND = {
     "event": "event",
     "film_shoot": "event",
     "parking_restriction": "no parking (a parking or loading restriction, not a closure)",
-    "reported_issue": "311 report",
 }
 
 
@@ -544,8 +543,7 @@ SCHEMAS = [
                        "a trip, a place briefing for what is happening at a landmark or corner, every record for "
                        "permits, closures or one block. If truncated is true, more "
                        "matches exist: say the list is partial.",
-        "parameters": {"type": "object", "required": ["place_id", "window_id"], "properties": {
-            **_IDS, "include_311": {"type": "boolean"}}}}},
+        "parameters": {"type": "object", "required": ["place_id", "window_id"], "properties": {**_IDS}}}},
     {"type": "function", "function": {
         "name": "find_event",
         "description": "An event the user names ('Rocky Run', 'the Marathon', 'Christmas Village'), city-wide; no "
@@ -570,23 +568,3 @@ SCHEMAS = [
         "parameters": {"type": "object", "required": ["place_id", "window_id"], "properties": {
             **_IDS, "since_year": {"type": "integer", "description": "Earliest year to include (default 2016)"}}}}},
 ]
-
-# The last step of a record answer when PENN_STRUCTURED=1 (penn.agent.render): the model says which records
-# answer the question, code writes their facts. Not in SCHEMAS, so the free-text loop never offers it.
-SUBMIT_ANSWER = {"type": "function", "function": {
-    "name": "submit_answer",
-    "description": "Finish the answer. List the event_ids that answer the question; code writes each record's "
-                   "title, blocks, dates, counts, caveats and citation from the tool results. Use only event_ids "
-                   "the tools returned this turn.",
-    "parameters": {"type": "object", "required": ["direct_answer", "records", "no_record"], "properties": {
-        "direct_answer": {"type": "string", "description": "One sentence answering the question (yes, no, or what "
-                          "kind of thing), with no titles, blocks, dates, counts or citations. Never say a street "
-                          "is closed."},
-        "records": {"type": "array", "description": "Every record that answers the question, on every street and "
-                    "block the search covered. Empty when none does.",
-                    "items": {"type": "object", "required": ["event_id", "why"], "properties": {
-                        "event_id": {"type": "string", "description": "An event_id copied from a tool result"},
-                        "why": {"type": "string", "description": "A few words on why it answers the question"}}}},
-        "no_record": {"type": "boolean", "description": "true when no record the tools returned answers it"},
-        "checked": {"type": "string", "description": "With no_record: the kind of record looked for, e.g. "
-                    "'a block party on Judson St'"}}}}}

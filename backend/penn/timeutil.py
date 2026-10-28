@@ -261,7 +261,7 @@ def window_kind(w: Window, now: datetime, records_start: date) -> str:
 
 def before_records_answer(label: str, records_start: date) -> str:
     return (f"PENN has no records for {label}. Its records start in {records_start.year}: City street "
-            f"permits, City-announced event closures and 311 reports for Philadelphia. Ask about "
+            f"permits, City-announced event closures and listed events for Philadelphia. Ask about "
             f"{records_start.year} or later, or about upcoming dates.")
 
 

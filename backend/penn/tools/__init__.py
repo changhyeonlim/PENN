@@ -17,7 +17,7 @@ from . import history
 
 # The exact legs (centerline seg_ids) of a resolved intersection, set by the API or the eval runner
 # around one question. Records that carry seg_ids then match only on those legs; records without
-# them (311 reports, closures not placed on the centerline) still match by cells. The model never
+# them (events, closures not placed on the centerline) still match by cells. The model never
 # handles the list: it is server-side context, like the resolved cells.
 LEGS: ContextVar[list[int] | None] = ContextVar("penn_legs", default=None)
 # A neighborhood's outline in fine cells (locate.area_inside), set the same way: the search still matches by
@@ -39,9 +39,9 @@ def place_params() -> dict:
     return {"legs": LEGS.get() or []}
 
 
-# Every event_type in penn.events (lane closures after p2-11, curated events, 311).
+# Every event_type in penn.events (lane closures after p2-11, curated and listed events).
 EVENT_TYPES = ["utility_work", "roadwork", "construction", "block_party", "parking_restriction", "event",
-               "other", "reported_issue"]
+               "other"]
 
 EVENT_FIELDS = """
     event_id, source, event_type, title, description, organization, occupancy,
@@ -98,8 +98,7 @@ DURATION = "coalesce(dateDiff('day', start_date, end_date), dateDiff('day', star
 
 
 def search_events(cells: list[int], start: str, end: str, types: list[str] | None = None,
-                  include_311: bool = False, limit: int = 100, detail: str = "full",
-                  max_days: int | None = None) -> dict:
+                  limit: int = 100, detail: str = "full", max_days: int | None = None) -> dict:
     """Events touching the cells and active in [start, end). Permits are 'scheduled', never 'closed'.
 
     max_days keeps only records lasting at most that many calendar days (a one-day permit is 1);
@@ -121,7 +120,6 @@ def search_events(cells: list[int], start: str, end: str, types: list[str] | Non
         SELECT {TOOL_FIELDS}{extra} FROM events FINAL
         WHERE {place_filter()} AND {ACTIVE_FILTER}
           {"AND event_type IN %(types)s" if types else ""}
-          {"" if include_311 else "AND source != 'philly_311'"}
           {f"AND NOT open_ended AND {DURATION} < %(max_days)s" if max_days else ""}
         ORDER BY open_ended, {DURATION}, coalesce(start_ts, toDateTime64(start_date, 3))
         LIMIT %(limit_plus)s
@@ -148,28 +146,6 @@ def search_events(cells: list[int], start: str, end: str, types: list[str] | Non
     if past:
         out["past_events_here"] = history.digest(_jsonable(past), history.catalog())
     return out
-
-
-def get_location_timeline(cells: list[int], start: str, end: str) -> dict:
-    """Monthly history for a place: 311 counts by type, plus permits and events with IDs.
-    Feeds the map's /timeline panel; not offered to the model (get_location_history is)."""
-    counts = db.query(
-        """
-        SELECT toStartOfMonth(start_ts, 'America/New_York') AS month, event_type, count() AS n
-        FROM events FINAL
-        WHERE source = 'philly_311' AND hasAny(h3_cells, %(cells)s)
-          AND start_ts >= %(t0)s AND start_ts < %(t1)s
-        GROUP BY month, event_type ORDER BY month
-        """,
-        {"cells": cells, **window_params(start, end)},
-    )
-    items = search_events(cells, start, end, include_311=False, limit=200)["events"]
-    snapshot_start = db.query("SELECT nullIf(min(snapshot_date), toDate(0)) AS first FROM permit_snapshots")
-    return {
-        "monthly_311": _jsonable(counts),
-        "events": items,
-        "closure_history_starts": _jsonable(snapshot_start)[0]["first"] if snapshot_start else None,
-    }
 
 
 HISTORY_SQL = """
@@ -227,8 +203,7 @@ TOOL_SCHEMAS = [
                                       "one block or address, parking, construction, or a specific record."},
             "types": {"type": "array", "items": {"type": "string", "enum": EVENT_TYPES},
                               "description": "Optional filter. Leave it out unless the user asks for one kind only; "
-                                             "parking_restriction covers Temporary No Parking and loading zones."},
-            "include_311": {"type": "boolean"}}}}},
+                                             "parking_restriction covers Temporary No Parking and loading zones."}}}}},
     {"type": "function", "function": {
         "name": "get_location_history",
         "description": "Past City-announced event closures at this location (races, parades, festivals, "

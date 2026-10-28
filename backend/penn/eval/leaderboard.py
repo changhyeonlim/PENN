@@ -30,7 +30,7 @@ def load_registry(path: Path = MODELS) -> dict:
 # loop and the page normalize; how often a model needs that is part of its score.
 STRICT = re.compile(r"\[id:[a-z0-9_]+:[A-Za-z0-9_:\-\.]+\]")
 # Anything in brackets that names a record source: a citation attempt, whatever its form.
-ATTEMPT = re.compile(r"[\[【][^\]】\n]{0,40}?\b(?:lane_closures|event_closures|philly_311|visitphilly|ticketmaster|web):"
+ATTEMPT = re.compile(r"[\[【][^\]】\n]{0,40}?\b(?:lane_closures|event_closures|visitphilly|ticketmaster|web):"
                      r"[^\]】\n]*[\]】]")
 
 

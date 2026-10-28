@@ -32,7 +32,7 @@ export function citationOrder(text: string): string[] {
 function clean(text: string) {
   return text
     .replace(MULTI, oneEach)                                                                       // 【ids:a, b】: one chip each
-    .replace(/\b(?:lane_closures|event_closures|philly_311|visitphilly|ticketmaster):[A-Za-z0-9_:\-.]+\s*(?=[\[【])/g, "")  // an ID written out right before its own citation
+    .replace(/\b(?:lane_closures|event_closures|visitphilly|ticketmaster):[A-Za-z0-9_:\-.]+\s*(?=[\[【])/g, "")  // an ID written out right before its own citation
     .replace(/\[id:\s*none[^\]]*\]/gi, "")                                                        // "[id:none ...]" is not a citation
     .replace(/【\s*((?:\[[^\]]+\]\s*)+)】/g, "$1")                                                  // 【[id:a] [id:b]】: keep the inner cites
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, "$1")                                              // a markdown link: its text (the page is a chip)

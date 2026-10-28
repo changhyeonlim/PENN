@@ -1,7 +1,7 @@
 """Ambiguity notes: fixed sentences for questions PENN knows are ambiguous, added in code.
 
 Prompt rules alone never got the model to flag ambiguity (0 of 3 eval questions across three
-runs), so like routing this is plain code: detect the known cases, return one sentence each,
+runs), so this is plain code: detect the known cases, return one sentence each,
 and the API puts them above the answer. The sentences are fixed, so they are testable and the
 model cannot drop them.
 

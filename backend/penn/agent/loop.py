@@ -1,25 +1,19 @@
-"""Ask PENN: the tool-calling loop.  >>> YOURS TO BUILD <<<
+"""Ask PENN: the tool-calling loop. Tests: tests/test_loop.py (a fake client, so no API key is needed).
 
-See docs/LEARNING.md, steps 1 to 3 and 5. Tests that define "done":
-tests/learning/test_loop.py (uses a fake client, so no API key is needed).
-
-What is already decided for you:
 - One model runs every turn (settings.model_chat, Super by default) and reads the
   conversation so far. Places and times are looked up by code through tools
   (penn/agent/context.py): the model passes words and gets short IDs back, so it
-  never invents cells or dates. `ctx.call(name, args)` runs a tool, `SCHEMAS` is
-  the list you pass to the API as `tools=`.
-- `citations.collect_ids(result)` gathers IDs from a tool result, and
-  `citations.check(text, ids)` tells you whether an answer is properly cited.
+  never invents cells or dates.
 - Token Factory speaks the OpenAI chat-completions format, so the `openai`
   package works with `base_url=settings.token_factory_base_url`.
 
-The loop you are building, in plain terms:
+One turn:
 1. Send the system prompt, the earlier turns, and the question (plus the context).
 2. If the reply asks for tool calls, run each tool, append its result as a
    "tool" message, and ask again.
-3. If the reply is text, run the citation check. Accept it, or ask for one
-   rewrite, then give up with an honest message.
+3. If the reply is text, run the checks: citations (every fact cites a record a tool
+   returned), web facts, permit counts and "is closed" claims. Accept it, or ask for
+   one rewrite, then give up with an honest message.
 4. Record one entry per model call (model, reason, latency, tokens) in `calls`.
 """
 from __future__ import annotations
@@ -28,10 +22,9 @@ from dataclasses import dataclass, field
 import json
 import re
 from penn.config import settings
-from .context import SCHEMAS, SUBMIT_ANSWER, Context
-from .router import Route
+from .context import SCHEMAS, Context
 import time
-from . import citations, render
+from . import citations
 
 SYSTEM = """You are PENN, a guide to street permits, street closures and events in the City of Philadelphia.
 You answer from PENN's records first, and from the web (search_web) when they do not answer.
@@ -91,7 +84,7 @@ GROUNDING
 
 RECORDS
 - Timed records (start_ts, end_ts) are announced closures; their times are already Philadelphia
-  local time. 311 records are resident reports, not confirmed events.
+  local time.
 - If a record's organization names a race organizer, say the closure list came from the race
   organizer, not the City.
 - Parking: PENN only knows Temporary No Parking and Temporary Loading Zone permits. Whenever parking
@@ -286,7 +279,7 @@ NO_RECORD = re.compile(r"\bno records? (of|for|on)\b", re.I)
 RECORDS_START = re.compile(r"\brecords start\b", re.I)
 # Permits and street work are PENN's own records; the web adds nothing to "no plumbing permit on Spruce St".
 PERMIT_QUESTION = re.compile(r"\b(permits?|permitted|block part(y|ies)|closed|closures?|construction|repav\w*|paving|excavat\w*|utility|pgw|peco|"
-                             r"water main|sidewalks?|scaffold\w*|cranes?|lanes?|parking|loading|valet|311)\b", re.I)
+                             r"water main|sidewalks?|scaffold\w*|cranes?|lanes?|parking|loading|valet)\b", re.I)
 WEB_NUDGE = ("Before saying PENN has no record, call search_web with a short query of what the user asked and "
              "where (not their whole message), then answer from what it finds, citing [id:web:...].")
 GIVE_UP = "PENN could not produce an answer it can support with its records. Try a narrower question."
@@ -295,6 +288,14 @@ TIMED_OUT = "PENN's model took too long to answer. Try again in a moment."
 UNAVAILABLE = "Ask PENN is unavailable right now. The map still works; try a question again later."
 CUT_OFF = ("Your answer was cut off at the length limit. Answer again, shorter: the same facts and citations, "
            "one line per record, no extra explanation.")
+
+
+@dataclass(frozen=True)
+class Route:
+    """The model that answered and why, for each call's log entry and the answer's `route_reason`."""
+    model: str
+    tier: str      # "super" or "chat" (a MODEL_CHAT or eval override)
+    reason: str
 
 
 @dataclass
@@ -507,23 +508,19 @@ def strip_think(text: str) -> str:
 
 def chat_route(model: str | None = None) -> Route:
     model = model or settings.model_chat or settings.model_super
-    name = "ultra" if model == settings.model_ultra else "super" if model == settings.model_super else "chat"
+    name = "super" if model == settings.model_super else "chat"
     return Route(model, name, f"Single model: {model.split('/')[-1]} for every turn")
 
 
 def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = None, client=None,
-        model: str | None = None, structured: bool | None = None) -> Answer:
+        model: str | None = None) -> Answer:
     """Run one Ask PENN turn and return a cited answer. `ctx` holds the places and windows known so
     far and records which ones the answer searched; `history` is earlier (question, answer) pairs.
-    `model` overrides settings.model_chat for this turn (the eval compares models with it).
-    `structured` overrides settings.structured: record answers end with submit_answer, written by render.py."""
+    `model` overrides settings.model_chat for this turn (the eval compares models with it)."""
     client = client or OpenAI(base_url=settings.token_factory_base_url, api_key=settings.token_factory_api_key,
                               max_retries=1)    # the default 2 retries would let one hung call take 3 timeouts
     route = chat_route(model)
-    sub = render.Structured(question, ctx.now, open_question=not PERMIT_QUESTION.search(question)) \
-        if (settings.structured if structured is None else structured) else None
-    rules, schemas = (RULES | render.RULES, SCHEMAS + [SUBMIT_ANSWER]) if sub else (RULES, SCHEMAS)
-    messages = [{"role": "system", "content": SYSTEM + render.SYSTEM if sub else SYSTEM}]
+    messages = [{"role": "system", "content": SYSTEM}]
     for q, a in (history or [])[-HISTORY_TURNS:]:
         messages += [{"role": "user", "content": q}, {"role": "assistant", "content": _past(a)}]
     messages.append({"role": "user", "content": f"{question}\n\nContext: {ctx.describe()}"})
@@ -544,7 +541,7 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
             return Answer(GIVE_UP, route, tools_called, [], "", calls, groups, sent_back)
         t0 = time.monotonic()
         try:
-            resp = client.chat.completions.create(model=route.model, messages=messages, temperature=0, tools=schemas,
+            resp = client.chat.completions.create(model=route.model, messages=messages, temperature=0, tools=SCHEMAS,
                                                   max_tokens=settings.model_max_tokens,
                                                   timeout=settings.model_timeout_s)
         except APITimeoutError:
@@ -572,18 +569,8 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
                     args = json.loads(tc.function.arguments or "{}")
                 except ValueError:
                     args = None
-                if sub and tc.function.name == "submit_answer":
-                    result = sub.submit(args, returned_ids, ctx.web_searched)   # the answer, or what to fix
-                    if isinstance(result, render.Rendered):
-                        return Answer(result.text or GIVE_UP, route, tools_called + ["submit_answer"], result.cited,
-                                      "", calls, groups, sent_back)
-                    if "did not return" in str(result.get("error", "")):
-                        sent_back.append(_sent_back("unknown_record"))
-                else:
-                    result = ctx.call(tc.function.name, args) if isinstance(args, dict) \
-                        else {"error": "arguments were not valid JSON"}
-                    if sub:
-                        sub.see(result)
+                result = ctx.call(tc.function.name, args) if isinstance(args, dict) \
+                    else {"error": "arguments were not valid JSON"}
                 returned_ids |= citations.collect_ids(result)
                 groups += citations.collect_groups(result) + ctx.take_groups()
                 folded += permit_groups(result)
@@ -597,7 +584,7 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
                 new = [k for k in rules_for(tc.function.name, result) if k not in rules_sent]
                 rules_sent.update(new)
                 if new:
-                    result = result | {"how_to_answer": [line for k in new for line in _lines(rules[k])]}
+                    result = result | {"how_to_answer": [line for k in new for line in _lines(RULES[k])]}
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -611,9 +598,6 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
                 break
             retried = True
             messages += [{"role": "assistant", "content": content}, {"role": "user", "content": CUT_OFF}]
-            continue
-        if sub and sub.wants_submit(shapes, tools_called):   # a record list written as text: ask once for submit_answer
-            messages += [{"role": "assistant", "content": content}, {"role": "user", "content": render.SUBMIT_NUDGE}]
             continue
         text = _drop_handle_cites(citations.split_multi(content), ctx)   # one [id:...] per record from here on
         if retried:

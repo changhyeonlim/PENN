@@ -24,7 +24,7 @@ MULTI = re.compile(rf"[\[【]\s*(?:[iI][dD][sS]?\s*:\s*)?({_ONE}(?:\s*[,;]\s*{_N
 # A bracket that looks like a citation but that CITE cannot read would reach the user as raw text
 # ("【ticketmaster】", "[ids: 2025-1]"), so it fails the check like an unknown ID.
 UNREAD = re.compile(r"【\s*[^\s】][^】]*】|\[\s*ids?\s*:[^\]]*\]", re.I)
-SOURCES = ("lane_closures:", "event_closures:", "philly_311:", "visitphilly:", "ticketmaster:", "web:")
+SOURCES = ("lane_closures:", "event_closures:", "visitphilly:", "ticketmaster:", "web:")
 # A correct negative answer ("PENN has no record of a block party there") has nothing to cite even when
 # the tools returned other records for the area. Allowed uncited only if it states no specifics.
 NO_RECORD = re.compile(r"\b(PENN has no record|PENN has no records|no record of|no records of|PENN does not cover)\b", re.I)

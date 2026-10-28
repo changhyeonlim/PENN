@@ -1,7 +1,7 @@
 """Guardrails for the public demo: what one visitor, or a fleet of bots, can make PENN spend.
 
-Off unless PENN_PUBLIC=1, which the deployed endpoint sets (deploy/endpoint/start.sh); local runs, tests and the
-eval are unaffected. Every count is per API process (the endpoint runs two, live and demo) and starts over when
+Off unless PENN_PUBLIC=1, which the deployed container sets (deploy/endpoint/start.sh); local runs, tests and the
+eval are unaffected. Every count is per API process (the container runs two, live and demo) and starts over when
 the process restarts. Layers, cheapest first:
 
 1. Size: a question is at most MAX_QUESTION characters; history, earlier answers and the context the browser
@@ -44,7 +44,7 @@ def _env(name: str, default: int) -> int:
 PUBLIC = os.getenv("PENN_PUBLIC", "0") == "1"
 # Where the visitor's address comes from. Next.js forwards the browser's X-Forwarded-For unchanged (it adds
 # nothing), so a bot can claim any address there; only entries appended by a proxy in front of us can be
-# trusted. PENN_TRUSTED_PROXIES = how many such proxies append to X-Forwarded-For (the endpoint's ingress: 1);
+# trusted. PENN_TRUSTED_PROXIES = how many such proxies append to X-Forwarded-For (the deployment's proxy: 1);
 # the visitor is the entry the outermost one added. PENN_CLIENT_IP_HEADER, if the ingress instead sets its own
 # header (e.g. x-real-ip), takes precedence. Neither set: the TCP peer (fine locally).
 TRUSTED_PROXIES = _env("PENN_TRUSTED_PROXIES", 0)

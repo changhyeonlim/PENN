@@ -155,5 +155,5 @@ function ListingDetail({ e, loading, error, cited, partners, dates }:
 }
 
 function sourceName(s: string) {
-  return ({ lane_closures: "Streets Department permit", event_closures: "City event closure notice", philly_311: "311 report" } as Record<string, string>)[s] ?? s;
+  return ({ lane_closures: "Streets Department permit", event_closures: "City event closure notice" } as Record<string, string>)[s] ?? s;
 }

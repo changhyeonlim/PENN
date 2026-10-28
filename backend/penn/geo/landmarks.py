@@ -1,7 +1,7 @@
 """Named places PENN knows (p3-10): "the Art Museum", "LOVE Park", "Kelly Drive", "Union Transfer".
 
-data/areas/landmarks.json is built by jobs/build_landmarks.py (City address points, street centerline
-corners and corridors, Ticketmaster venues); nothing is looked up at runtime. Two uses:
+data/areas/landmarks.json was built once from City address points, street centerline corners and
+corridors, and Ticketmaster venues; nothing is looked up at runtime. Two uses:
 - a question naming one searches there (locate.from_text);
 - an answer mentioning some, when the question named no place, frames the map on them (api /agent).
 

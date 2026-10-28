@@ -13,8 +13,6 @@ from penn.geo import locate
 from penn.timeutil import Window
 from penn.web import tavily
 
-from .conftest import needs
-
 CELLS = [617733123456789]
 WIN = ("2026-10-10T06:00:00-04:00", "2026-10-10T12:00:00-04:00")
 PERMIT = {"event_id": "lane_closures:2025-07887", "title": "Storm Water Installation", "occupancy": "Full Closure"}
@@ -68,7 +66,7 @@ def context():
 
 
 def run(client, q="What is happening on Judson St Saturday morning?", history=None, ctx=None):
-    return needs(loop.ask, q, ctx or context(), history=history, client=client)
+    return loop.ask(q, ctx or context(), history=history, client=client)
 
 
 def test_runs_tool_then_answers_with_citation(fake_tools):
@@ -192,7 +190,7 @@ def test_think_tags_are_not_part_of_the_answer(fake_tools):
 
 def test_model_can_be_set_per_turn(fake_tools):
     client = FakeClient([text("Hi! Ask me about a street.")])
-    a = needs(loop.ask, "hi", context(), client=client, model="org/other-model")
+    a = loop.ask("hi", context(), client=client, model="org/other-model")
     assert client.requests[0]["model"] == "org/other-model" and a.route.model == "org/other-model"
 
 

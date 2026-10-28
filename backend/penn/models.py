@@ -11,9 +11,9 @@ ClaimCertainty = Literal["scheduled", "observed", "inferred", "planned"]
 
 @dataclass
 class NormalizedEvent:
-    source: str                      # e.g. "lane_closures", "philly_311", "recurring_events"
+    source: str                      # e.g. "lane_closures", "event_closures", "ticketmaster"
     source_record_id: str            # stable ID within the source (permit number, request ID)
-    event_type: str                  # roadwork, utility, event, reported_issue, parking_restriction ...
+    event_type: str                  # roadwork, utility_work, event, block_party, parking_restriction ...
     title: str
     source_url: str
     source_authority: SourceAuthority

@@ -28,7 +28,7 @@ from .runner import run_all
 from .schema import EVAL_DIR, Question, Result, load_questions, load_results
 
 
-# The frozen copy of 2026-10-17 (jobs/freeze_demo.py): the live database keeps changing, and an answer
+# The frozen copy of 2026-10-17 (the penn_demo database): the live database keeps changing, and an answer
 # must not fail because a listing appeared after the expectations were written.
 DEFAULT_DB = "penn_demo"
 
