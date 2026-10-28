@@ -34,9 +34,10 @@ CREATE TABLE IF NOT EXISTS penn.events
     centroid_lon      Float64,
     h3_r9             UInt64,
     h3_cells          Array(UInt64),
+    seg_ids           Array(UInt32) DEFAULT [],   -- street centerline segments; the exact legs of an intersection
     start_date        Nullable(Date),        -- date-only sources (permits, curated events)
     end_date          Nullable(Date),
-    start_ts          Nullable(DateTime64(3, 'UTC')),  -- timestamped sources (311, event closure windows)
+    start_ts          Nullable(DateTime64(3, 'UTC')),  -- timestamped sources (event closure windows, ticketed events)
     end_ts            Nullable(DateTime64(3, 'UTC')),
     open_ended        Bool,
     status            LowCardinality(String),
