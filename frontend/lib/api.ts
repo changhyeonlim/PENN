@@ -122,7 +122,7 @@ export const isListing = (c: Category) => c === "listing" || c === "ticketed";
 
 /** Sources of events that happen at a place without closing a street: drawn as pins, never as closures. */
 export const LISTING_SOURCES = ["visitphilly", "ticketmaster"];
-export const LISTED_BY: Record<string, string> = { visitphilly: "visitphilly.com", ticketmaster: "Ticketmaster" };
+export const LISTED_BY: Record<string, string> = { visitphilly: "the city's official tourism guide", ticketmaster: "Ticketmaster" };
 
 /** The record's reason. Road, utility and building work are all construction; so is the odd other permit (a
  *  banner, an unmapped work type), since every one of them is work in the street. */
@@ -151,7 +151,7 @@ export const CATEGORIES: { key: Category; color: string; label: string; detail: 
   { key: "event", color: "#5A3FC0", label: "Event closure", detail: "Announced by the City for an event" },
   { key: "blockparty", color: "#0E9F6E", label: "Block party", detail: "Block party permit" },
   { key: "parking", color: "#6B7280", label: "No parking", detail: "Parking or loading restriction" },
-  { key: "listing", color: "#1B2433", label: "Event listing", detail: "visitphilly.com pick; no street closure listed" },
+  { key: "listing", color: "#1B2433", label: "Event listing", detail: "A local pick from the city's official tourism guide; no street closure listed" },
   { key: "ticketed", color: "#1B2433", label: "Ticketed event", detail: "Ticketmaster listing; no street closure listed" },
 ];
 /** Plain-language meaning of each category, for the key's explanation. */
@@ -160,7 +160,7 @@ export const MEANING: Record<Category, string> = {
   event: "The City announced the street closes for an event, such as a race or a parade.",
   blockparty: "A block party permit closes the block to traffic for the party.",
   parking: "Parking or loading is restricted at the curb.",
-  listing: "An editor's pick on visitphilly.com: something happening at this place. A listing is not a street closure.",
+  listing: "A local pick from the city's official tourism guide: something happening at this place. A listing is not a street closure.",
   ticketed: "A ticketed event at this venue, listed by Ticketmaster. A listing is not a street closure.",
 };
 /** The line weights, heaviest first, with what each means for getting through. */

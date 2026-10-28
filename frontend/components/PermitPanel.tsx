@@ -113,6 +113,9 @@ function ListingDetail({ e, loading, error, cited, partners, dates }:
   const w = when(e);
   const { where, note } = listingWhere(e);
   const lister = LISTED_BY[e.source] ?? e.source;
+  // A local pick's organization reads "visitphilly.com, updated <date>": show the guide's description, keep the date.
+  const listedBy = e.source === "visitphilly" && e.organization?.startsWith("visitphilly.com")
+    ? lister[0].toUpperCase() + lister.slice(1) + e.organization.slice("visitphilly.com".length) : e.organization || lister;
   return (
     <div className="detail">
       <div className={`cat-tag cat-${category(e)}`}><Swatch cat={category(e)} /> {LABEL[category(e)]}</div>
@@ -137,9 +140,9 @@ function ListingDetail({ e, loading, error, cited, partners, dates }:
         )}
         <div><dt>Where</dt><dd>{where || "Location not described"}</dd></div>
         <div><dt>Streets</dt><dd>No street closure listed<span className="sub">Closures for this event, if any, show as their own lines.</span></dd></div>
-        <div><dt>Listed by</dt><dd>{e.organization || lister}
+        <div><dt>Listed by</dt><dd>{listedBy}
           {partners.length > 0 && <span className="sub">
-            Also {partners[0].source === "visitphilly" ? "an editor’s pick on " : "sold on "}
+            Also {partners[0].source === "visitphilly" ? "a local pick in " : "sold on "}
             <a href={partners[0].source_url} target="_blank" rel="noreferrer">{LISTED_BY[partners[0].source] ?? partners[0].source}</a>
             {partners.length > 1 && ` (${partners.length} dates)`}
           </span>}</dd></div>

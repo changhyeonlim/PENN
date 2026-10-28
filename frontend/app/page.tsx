@@ -1436,8 +1436,9 @@ export default function Page() {
               incomplete or out of date; check the linked record.</p>
             <h3>Sources</h3>
             <p><a href="https://opendataphilly.org/datasets/street-lane-closures/" target="_blank" rel="noopener">City
-              of Philadelphia</a> street permits and event-closure notices, race organizers, <a
-              href="https://www.visitphilly.com/" target="_blank" rel="noopener">visitphilly.com</a> and <a
+              of Philadelphia</a> street permits and event-closure notices, race organizers, local picks from the
+              city's official tourism guide (<a href="https://www.visitphilly.com/" target="_blank"
+              rel="noopener">visitphilly.com</a>), <a
               href="https://www.ticketmaster.com/" target="_blank" rel="noopener">Ticketmaster</a> listings, and web
               pages found with <a href="https://www.tavily.com/" target="_blank" rel="noopener">Tavily</a> search
               when PENN has no record.</p>
@@ -1458,8 +1459,9 @@ export default function Page() {
               answer them. When PENN has no record, a short web search (an event&apos;s name and year, or a few
               words on what you asked, never your question itself) is sent to Tavily, which may keep it.</p>
             <p>This browser remembers whether you chose Judge or Visitor (and a judge&apos;s access code) in its own
-              storage. To keep the demo within its limits, PENN counts questions per day; that count never includes
-              what you asked or your address.</p>
+              storage. To keep the demo within its limits and fix wrong answers, PENN keeps the questions you ask
+              for 30 days, with how long each took and what it cost. They are filed under a code that changes
+              every day, never your IP address, so leave anything personal out of what you ask.</p>
           </section>
         )}
       </div>
