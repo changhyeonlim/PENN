@@ -53,7 +53,7 @@ function byWhen(a: PennEvent, b: PennEvent): number {
 // the same boundaries the server uses when a question names a neighborhood.
 const HOODS_URL = "/neighborhoods.geojson";
 const HOOD_LAYERS = ["hood-line", "hood-focus", "hood-label"];
-// Everything past the city line, built from the neighborhoods by scripts/build_city_mask.py.
+// Everything past the city line, built once from the neighborhood outlines.
 const CITY_MASK_URL = "/city-mask.geojson";
 const SIGN = "#1E5B44";   // --sign in globals.css
 // The ask box's rolling hint: one of each kind of question PENN answers, alternating so no two neighbors are
@@ -357,11 +357,20 @@ export default function Page() {
   const [loaded, setLoaded] = useState<Record<string, string>>({});   // source -> last successful load (p4-04)
 
   const [question, setQuestion] = useState("");
-  // The judge gate (components/RoleGate.tsx): undefined until this browser's saved choice is read, so the page as
-  // first served, and with JavaScript off, shows the gate. The server checks the judge code on every question.
+  // The judge gate (components/RoleGate.tsx): undefined until this browser's saved choice is read. Until a role is
+  // chosen the map is the bare city: no records, freshness or neighborhoods are asked for, and the chrome waits.
+  // Once in, they stay loaded, even when a visitor goes back to the gate. The server checks the judge code on every
+  // question.
   const [role, setRole] = useState<Role | null | undefined>(undefined);
   const [gateNotice, setGateNotice] = useState("");
   useEffect(() => setRole(savedRole()?.role ?? null), []);
+  const gated = role !== "judge" && role !== "visitor";
+  const [entered, setEntered] = useState(false);
+  if (!gated && !entered) setEntered(true);
+  const enteredRef = useRef(entered); enteredRef.current = entered;
+  // Shown only once the saved choice is known to be none, so a returning visitor never sees it flash; on a choice
+  // it fades out over the map as the records come in.
+  const gate = usePresence(role === null);
   const [asked, setAsked] = useState("");
   const sent = useRef<string[]>([]);   // questions already asked, oldest first; Up and Down walk them
   // The conversation PENN remembers: the last few exchanges and the place and window the last answer
@@ -542,7 +551,7 @@ export default function Page() {
 
   const load = useCallback(() => {
     const m = map.current;
-    if (!m || !m.getSource("events")) return;
+    if (!m || !m.getSource("events") || !enteredRef.current) return;   // behind the gate: nothing yet
     const seq = ++loadSeq.current;
     const replay = winRef.current === "replay" ? replaySpan() : null;
     // Records up to a week past today come too, to fade in at the slider's right edge as on the days before it.
@@ -714,7 +723,7 @@ export default function Page() {
       // plainest when zoomed out, where neighborhoods are the useful frame. At street level it stays, narrower than
       // the street it runs down, so the street still shows on either side. The asked-about one is a solid
       // sign-green line at every zoom.
-      m.addSource("hoods", { type: "geojson", data: HOODS_URL });
+      m.addSource("hoods", { type: "geojson", data: enteredRef.current ? HOODS_URL : empty });
       add({ id: "hood-line", type: "line", source: "hoods",
         paint: { "line-color": HOOD.line, "line-blur": 1,
           "line-width": ["interpolate", ["linear"], ["zoom"], 11, 3, 14, 4.5, 17, 5],
@@ -878,7 +887,11 @@ export default function Page() {
     return () => { clearTimeout(t); m.remove(); map.current = null; };   // StrictMode mounts twice in development
   }, [load, countInView, select, closePanel]);
 
-  useEffect(() => { load(); }, [win, answerSpan, load]);
+  useEffect(() => { load(); }, [win, answerSpan, entered, load]);
+  // Past the gate, the neighborhoods join the map (if it was set up before then, with none).
+  useEffect(() => {
+    if (entered) (map.current?.getSource("hoods") as maplibregl.GeoJSONSource | undefined)?.setData(HOODS_URL);
+  }, [entered]);
 
   // The slider moved: the map's clock follows, a show's next date leads its run again, and the city redraws.
   useEffect(() => {
@@ -916,10 +929,11 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
+    if (!entered) return;
     getJSON<{ source: string; last_ok: string }[]>("/freshness")
       .then(rows => setLoaded(Object.fromEntries(rows.map(r => [r.source, r.last_ok]))))
       .catch(() => {});   // the stamps are a nicety; the map's own error covers a missing API
-  }, []);
+  }, [entered]);
 
   useEffect(() => { drawCity(); countInView(); }, [hiddenCats, drawCity, countInView]);
 
@@ -1243,7 +1257,7 @@ export default function Page() {
     ? answerHeadline(citedRecs as PennEvent[], reply.start, reply.end) : null;
 
   return (
-    <main className={`app${panelOpen ? " panel-open" : ""}${picking ? " picking" : ""}${win === "replay" ? " replaying" : ""}`}>
+    <main className={`app${panelOpen ? " panel-open" : ""}${picking ? " picking" : ""}${win === "replay" ? " replaying" : ""}${gated ? " gated" : ""}`}>
       <div className="map" ref={mapEl} role="region" aria-label="Map of Philadelphia street permits" />
 
       <header className="topbar" ref={setTopbarEl}>
@@ -1449,8 +1463,9 @@ export default function Page() {
           </section>
         )}
       </div>
-      {role !== "judge" && role !== "visitor" && (
-        <RoleGate notice={gateNotice} onEnter={(r, q) => { setGateNotice(""); setRole(r); if (q) ask(q, null); }} />
+      {gate && (
+        <RoleGate leaving={gate === "out"} notice={gateNotice}
+          onEnter={(r, q) => { setGateNotice(""); setRole(r); if (q) ask(q, null); }} />
       )}
     </main>
   );

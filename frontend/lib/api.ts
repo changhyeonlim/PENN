@@ -252,7 +252,7 @@ export function when(e: PennEvent): { range: string; note?: string } {
 }
 
 /** Demo mode: a fixed "now" (NEXT_PUBLIC_PENN_NOW, ISO 8601), matching the API's PENN_NOW, so a frozen
- *  snapshot (jobs/freeze_demo.py) looks the same whenever the demo is recorded. */
+ *  snapshot (the penn_demo database) looks the same whenever the demo is recorded. */
 export const PINNED_NOW = process.env.NEXT_PUBLIC_PENN_NOW || "";
 /** The real "now" (or the pinned demo time): what "Updated today" and the preset windows count from. */
 export function realNow(): Date {

@@ -579,6 +579,11 @@ button { cursor: pointer; }
 .headline { animation: rise-in var(--dur) var(--ease) backwards; }   /* it can land after the answer, once its records do */
 .about.leaving { animation: card-out var(--dur-out) ease-in forwards; pointer-events: none; }
 .replay.leaving { animation: drop-out var(--dur-out) ease-in forwards; pointer-events: none; }
+/* Behind the judge gate (RoleGate.tsx) the map is the bare city: the top bar, zoom, key and ask box wait, and
+   arrive with the records once a role is chosen. The fine print stays, for the map credits. */
+.app.gated :is(.topbar, .maplibregl-ctrl-top-right, .dock-row) { visibility: hidden; }
+.app:not(.gated) :is(.topbar, .maplibregl-ctrl-top-right) { animation: drop-in var(--dur) var(--ease) backwards; }
+.app:not(.gated) .dock-row { animation: rise-in var(--dur) var(--ease) backwards; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0s !important; animation: none !important; }
