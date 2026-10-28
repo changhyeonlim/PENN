@@ -6,31 +6,23 @@ __pycache__/
 .pytest_cache/
 node_modules/
 .next/
-eval/results/
-logs/
+next-env.d.ts
 *.egg-info/
+logs/
 
-# visitphilly pages saved by hand, and the snapshots made from them
-scripts/*.htm
-scripts/*.html
-scripts/*_files/
-data/snapshots/visitphilly/
-# Tavily search results (web pages are their publishers'); kept 24 h, replayed in demo mode
-data/web_cache/
-
-# Street centerline (33 MB); geocode_closures downloads it when missing
-data/centerline/
+# Kept on this machine, not in the repo: data (it goes into the image from this folder), local tools,
+# notes, slides, editor settings, and eval runs (only the eval scripts are code)
+data/
+scripts/
+docs/
+deck/
+.claude/
+eval/*
+!eval/*.py
 
 # ClickHouse dumps from deploy/export_db.sh (hundreds of MB; baked into the image, never in git)
 dumps/
 # deploy/release.sh build context (code + data copied in, deleted after the build)
 .release/
-
-# City closure notice pages saved by hand: local only
-data/snapshots/phila_press/
-scripts/phila_press/
-
 # Local scratch work: never tracked
 scratch/
-# Preview launch config with this machine's paths
-.claude/launch.json
