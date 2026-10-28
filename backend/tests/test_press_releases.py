@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from penn.ingestion.press_releases import (
-    Notice, build_csv, closure_notices, event_name, match_series, parse_item, parse_lead_in, parse_notice,
+    Notice, build_csv, event_name, match_series, parse_item, parse_lead_in, parse_notice,
 )
 
 PUB = datetime(2026, 10, 15)
@@ -77,19 +77,6 @@ def test_series_matching():
     assert match_series("Philadelphia St. Patrick's Day Parade", CATALOG) == "st-patricks-day-parade"
     assert match_series("No Kings Protest", CATALOG) is None          # not the numbered "No Kings 3"
     assert match_series("OURFest Block Party and Festival", CATALOG) is None
-
-
-def test_feed_filter_keeps_special_events_closure_notices():
-    posts = [
-        {"id": 1, "title": "City Announces Road Closures for the 2026 Philly Bike Ride", "template": "press_release",
-         "date": "2026-10-15 10:00:00", "link": "/2026-10-15-bike/", "categories": [{"name": "Special Events"}]},
-        {"id": 2, "title": "Mayor's Public Schedule", "template": "press_release", "date": "2026-10-15 09:00:00",
-         "link": "/x/", "categories": [{"name": "Special Events"}]},
-        {"id": 3, "title": "Road Closures for Paving", "template": "press_release", "date": "2026-10-14 09:00:00",
-         "link": "/y/", "categories": [{"name": "Streets"}]},
-    ]
-    got = closure_notices(posts)
-    assert [n.id for n in got] == [1] and got[0].url == "https://www.phila.gov/2026-10-15-bike/"
 
 
 PAGE = """<main><p>For immediate release: October 15, 2026</p>

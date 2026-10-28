@@ -1,14 +1,17 @@
-"""Entry point for Nebius Serverless Jobs (or cron, locally).
+"""PENN's data loads, run by the container's daily refresh (deploy/endpoint/refresh.sh) or by hand.
 
     python jobs/run_job.py lane_closures      # daily: events + today's snapshot
-    python jobs/run_job.py philly_311 2025    # backfill one year (repeat per year)
-    python jobs/run_job.py philly_311         # daily: current year
     python jobs/run_job.py recurring_events   # one-time curated backfill
     python jobs/run_job.py event_closures     # announced closures; all rows or none
     python jobs/run_job.py geocode_closures   # match closures to street centerline -> events
     python jobs/run_job.py geocode_closures --export broad-street-run   # also write GeoJSON
+    python jobs/run_job.py visitphilly        # weekly picks from data/snapshots/visitphilly
+    python jobs/run_job.py ticketmaster       # ticketed events, next 60 days; drops ones no longer listed
+    python jobs/run_job.py press_releases --saved scripts/phila_press   # City closure notices saved by hand:
+                                              # file, parse, load, place on the map
 
-Each run writes a row to penn.ingest_runs, which feeds the map's freshness stamps.
+Each run writes a row to penn.ingest_runs, which feeds the map's freshness stamps (except a press_releases
+run with nothing new).
 """
 from __future__ import annotations
 
@@ -24,7 +27,9 @@ sys.path.insert(0, str(ROOT / "backend"))
 from penn import db  # noqa: E402
 from penn.config import LOCAL_TZ  # noqa: E402
 from penn.geo import streets  # noqa: E402
-from penn.ingestion import event_closures, lane_closures, recurring_events, requests311  # noqa: E402
+from penn.ingestion import (event_closures, lane_closures, press_releases, recurring_events,  # noqa: E402
+                            ticketmaster, visitphilly)
+from penn.tools import history  # noqa: E402
 
 CENTERLINE = ROOT / "data" / "centerline" / "street_centerline.geojson"
 ROUTES = ROOT / "data" / "closure_routes.csv"
@@ -57,14 +62,6 @@ def run_lane_closures() -> int:
     return db.insert_events(lane_closures.group_by_permit(feats))
 
 
-def run_311(year: int | None) -> int:
-    year = year or datetime.now(LOCAL_TZ).year
-    rows = list(requests311.fetch_year(year))
-    # event_type is "reported_issue" until the Nano classifier maps service names to categories.
-    events = [e for e in (requests311.normalize(r) for r in rows) if e]
-    return db.insert_events(events)
-
-
 def run_recurring() -> int:
     return db.insert_events(recurring_events.load_all(ROOT / "data" / "recurring_events"))
 
@@ -77,7 +74,82 @@ def run_event_closures() -> int:
         # A bad file never half-loads: refuse the whole run.
         raise InvalidRows(f"{len(errors)} invalid rows, nothing inserted; first: "
                           f"{errors[0].file}:{errors[0].line}: {errors[0].reason}")
-    return db.insert_closures(rows)
+    n = db.insert_closures(rows)
+    if rows:
+        # The files are the whole truth (all rows or none), so a closure no longer in them goes, with its map
+        # line. A closure renamed in a rerun (a City advisory's events read by name, not "City Advisory
+        # <date>") gets a new closure_id; the old row would otherwise draw the same street a second time.
+        keep = [r["closure_id"] for r in rows]
+        for sql in ("ALTER TABLE event_closures DELETE WHERE closure_id NOT IN %(keep)s",
+                    "ALTER TABLE events DELETE WHERE source = 'event_closures' AND source_record_id NOT IN %(keep)s"):
+            db.client().command(sql, parameters={"keep": keep}, settings={"mutations_sync": 2})
+    return n
+
+
+def run_ticketmaster() -> int:
+    """Ticketmaster's terms allow keeping events only as long as the service needs them: load the next
+    60 days, then delete every ticketmaster row this run did not return (past, removed, cancelled).
+    A run that returns nothing deletes nothing, so an API outage cannot empty the map."""
+    rep = ticketmaster.FetchReport()
+    raw = ticketmaster.fetch(datetime.now(LOCAL_TZ), client=None, rep=rep)
+    ticketmaster.correct_venues(raw, rep=rep)
+    events = ticketmaster.to_events(raw, rep)
+    print(f"{rep.calls} API calls, {len(raw)} events listed -> {rep.events} in the city")
+    print(f"skipped, cancelled ({len(rep.skipped_status)}); add-ons ({len(rep.add_ons)}); outside the city ({len(rep.outside)}); "
+          f"no venue location ({len(rep.no_location)})")
+    print(f"venue pins moved to the City's address point ({len(rep.moved)}); duplicate performances dropped "
+          f"({rep.duplicates})")
+    for s in rep.moved:
+        print(f"  moved {s}")
+    for s in rep.outside + rep.no_location:
+        print(f"  {s}")
+    n = db.insert_events(events)
+    if events:
+        keep = [e.event_id for e in events]
+        db.client().command("ALTER TABLE events DELETE WHERE source = %(s)s AND event_id NOT IN %(keep)s",
+                            parameters={"s": ticketmaster.SOURCE, "keep": keep}, settings={"mutations_sync": 2})
+    return n
+
+
+def run_visitphilly() -> int:
+    """Every snapshot, every run: rows are keyed by item, so reloading replaces rather than adds."""
+    events, rep, raw = visitphilly.load_all(ROOT / "data" / "snapshots" / "visitphilly")
+    _raw(visitphilly.SOURCE, raw)
+    print(f"{rep.files} snapshots, {rep.items} items -> {rep.events} events")
+    print(f"skipped, no usable date ({len(rep.unparsed)}):")
+    for s in rep.unparsed:
+        print(f"  {s}")
+    print(f"skipped, outside the city ({len(rep.outside)}):")
+    for s in rep.outside:
+        print(f"  {s}")
+    return db.insert_events(events)
+
+
+def run_press_releases(saved: list[str]) -> int | None:
+    """p1-11: file City closure notices saved by hand in a browser (files or folders), rewrite
+    data/event_closures/press_releases.csv from all of them, then load every closure file and match it to
+    the centerline, as event_closures and geocode_closures do. When none of the pages is new or edited,
+    nothing is rebuilt and None is returned, so the run isn't stamped as fresh data."""
+    snapshots = ROOT / "data" / "snapshots" / "phila_press"
+    fetched = press_releases.import_saved([Path(p) for p in saved], snapshots)
+    print(f"{fetched.notices} saved pages read: {len(fetched.saved)} new or edited, "
+          f"{len(fetched.unchanged)} already filed, {len(fetched.failed)} skipped")
+    for f in fetched.saved:
+        print(f"  saved {f}")
+    for f in fetched.failed:
+        print(f"  SKIPPED {f}", file=sys.stderr)
+    if not fetched.saved:
+        return None
+    catalog = {s: r["name"] for s, r in history.catalog().items()}
+    rep = press_releases.build_csv(snapshots, ROOT / "data" / "event_closures", catalog)
+    print(f"{len(rep.used)} notices -> {rep.rows} closure rows ({len(rep.curated)} left to curated files, "
+          f"{rep.duplicates} repeated closures dropped)")
+    for s in rep.empty:
+        print(f"  no closure list: {s}")
+    for s in rep.problems:
+        print(f"  could not read: {s}")
+    run_event_closures()
+    return run_geocode_closures([])
 
 
 def run_geocode_closures(export: list[str]) -> int:
@@ -155,12 +227,21 @@ def main(argv: list[str]) -> None:
     try:
         if source == "lane_closures":
             n = run_lane_closures()
-        elif source == "philly_311":
-            n = run_311(int(argv[2]) if len(argv) > 2 else None)
         elif source == "recurring_events":
             n = run_recurring()
         elif source == "event_closures":
             n = run_event_closures()
+        elif source == "visitphilly":
+            n = run_visitphilly()
+        elif source == "ticketmaster":
+            n = run_ticketmaster()
+        elif source == "press_releases":
+            if "--saved" not in argv or argv.index("--saved") == len(argv) - 1:
+                raise SystemExit("press_releases needs --saved <files or folders of notice pages saved by hand>")
+            n = run_press_releases(argv[argv.index("--saved") + 1:])
+            if n is None:
+                print(f"{source}: no new or edited notices, nothing loaded")
+                return
         elif source == "geocode_closures":
             export = argv[argv.index("--export") + 1:] if "--export" in argv else []
             n = run_geocode_closures(export)

@@ -1,7 +1,7 @@
 """p3-13: visitphilly's weekly "Things to Do This Week & Weekend" picks, as event rows.
 
-Input: data/snapshots/visitphilly/*.json, written by scripts/fetch_visitphilly.py. Each file is the
-whole page as it stood when fetched; files are read oldest first and a later file's version of an item
+Input: data/snapshots/visitphilly/*.json, made from the weekly page saved by hand in a browser. Each
+file is the whole page as it stood when saved; files are read oldest first and a later file's version of an item
 wins, so mid-week edits replace the earlier text.
 
 What is kept:
@@ -18,7 +18,7 @@ item is running by then. A qualifier like "(Sundays only)" goes into the descrip
 spans the whole range.
 
 Rows are source_authority="curated" (an editorial pick, not a City record). source_url links back to
-visitphilly, as its terms of use require: the item's own visitphilly article when it has one, else its
+visitphilly, crediting it as the source: the item's own visitphilly article when it has one, else its
 heading on the weekly page (#<textid>), never the organizer's site. organization names visitphilly as
 the lister.
 description is the "Where:" line, plus a qualifier like "Sundays only".

@@ -4,13 +4,12 @@ Big events (races, parades, the Bike Ride) are not in the Streets Department's L
 the Office of Special Events announces their closures in a press release a few days ahead, and the
 "upcoming road closures" page lists only small neighborhood events. This module reads those releases.
 
-Stage 1, fetch. phila.gov's archive page (the-latest/archives) is filled from one JSON feed with the
-5,000 newest City posts. Notices are the Special Events press releases titled "road closures",
-"traffic advisory" or "travel advisory". Each notice's HTML is saved once, and again only if the City
-edits it (updated_at changes):
+Stage 1, file (import_saved). Notices are the Special Events press releases titled "road closures",
+"traffic advisory" or "travel advisory", opened in a browser and saved by hand; nothing here touches
+the network. Each notice is filed once, and again only if its saved text changes:
 
     data/snapshots/phila_press/<published YYYY-MM-DD>-<slug>.html
-    data/snapshots/phila_press/index.json      what was saved, keyed by post id
+    data/snapshots/phila_press/index.json      what was filed, keyed by post id
 
 Stage 2, parse (parse_notice). Closure lists follow one template: a lead-in such as "The following
 streets will be closed to vehicular traffic beginning at 3:30 a.m. on Saturday, October 17, and will
@@ -33,11 +32,6 @@ from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 
-import httpx
-
-ARCHIVE_URL = "https://muuljp5pva.execute-api.us-east-1.amazonaws.com/"
-SITE = "https://www.phila.gov"
-USER_AGENT = "PENN-hackathon/0.1 (Philadelphia street-closure map; one fetch per notice)"
 DEPARTMENT = "Special Events"
 NOTICE_TITLE = re.compile(r"road closure|traffic advisory|travel advisory", re.I)
 
@@ -52,38 +46,6 @@ class Notice:
     file: str = ""        # saved HTML, relative to the snapshot folder
 
 
-def _departments(post: dict) -> list[str]:
-    return [c.get("slang_name") or c.get("name") or "" for c in post.get("categories") or [] if isinstance(c, dict)]
-
-
-def closure_notices(posts: list[dict]) -> list[Notice]:
-    """Special Events press releases about road closures, newest first."""
-    out = []
-    for p in posts:
-        if p.get("template") != "press_release" or DEPARTMENT not in _departments(p):
-            continue
-        if not NOTICE_TITLE.search(p.get("title", "")):
-            continue
-        link = p["link"] if p["link"].startswith("http") else SITE + p["link"]
-        out.append(Notice(id=p["id"], title=p["title"].strip(), published=p["date"],
-                          updated_at=p.get("updated_at") or p["date"], url=link))
-    return sorted(out, key=lambda n: n.published, reverse=True)
-
-
-def _client() -> httpx.Client:
-    return httpx.Client(timeout=60, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
-
-
-def fetch_index(client: httpx.Client | None = None) -> list[Notice]:
-    client = client or _client()
-    r = client.get(ARCHIVE_URL)
-    r.raise_for_status()
-    posts = r.json()
-    if not isinstance(posts, list) or len(posts) < 100:
-        raise RuntimeError(f"archive feed returned {type(posts).__name__} of {len(posts) if isinstance(posts, list) else '?'} posts")
-    return closure_notices(posts)
-
-
 def _file_name(n: Notice) -> str:
     slug = n.url.rstrip("/").rsplit("/", 1)[-1]
     slug = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", slug)[:90]
@@ -95,31 +57,87 @@ class FetchReport:
     notices: int = 0
     saved: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
 
 
-def fetch_new(folder: Path, client: httpx.Client | None = None) -> FetchReport:
-    """Save every notice not saved yet, or edited since it was saved. One request per new notice."""
-    client = client or _client()
+def _index(folder: Path) -> dict[str, dict]:
     folder.mkdir(parents=True, exist_ok=True)
-    index_path = folder / "index.json"
-    index: dict[str, dict] = json.loads(index_path.read_text(encoding="utf-8")) if index_path.exists() else {}
-    notices = fetch_index(client)
-    rep = FetchReport(notices=len(notices))
-    for n in notices:
+    path = folder / "index.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def _write_index(folder: Path, index: dict[str, dict]) -> None:
+    (folder / "index.json").write_text(json.dumps(index, indent=1, ensure_ascii=False, sort_keys=True),
+                                       encoding="utf-8")
+
+
+# ---- stage 1: file ----
+# Notices are saved from a browser (Ctrl+S on the notice page) into scripts/phila_press/. A saved page
+# carries what filing needs: the post id (body class postid-N), the canonical URL, the title (og:title,
+# "... | Office of Special Events") and the publish time (meta published_at).
+
+class _Head(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.post_id = self.url = self.title = self.published = ""
+
+    def handle_starttag(self, tag, attrs):
+        a = {k: v or "" for k, v in attrs}
+        if tag == "body":
+            m = re.search(r"\bpostid-(\d+)\b", a.get("class", ""))
+            self.post_id = m.group(1) if m else self.post_id
+        elif tag == "link" and a.get("rel") == "canonical":
+            self.url = a.get("href", "")
+        elif tag == "meta" and a.get("property") == "og:title":
+            self.title = a.get("content", "")
+        elif tag == "meta" and a.get("name") == "published_at":
+            self.published = a.get("content", "")
+
+
+def notice_from_page(page: str) -> tuple[Notice | None, str]:
+    """The notice a saved page is, or None and why it isn't one PENN reads."""
+    h = _Head()
+    h.feed(page)
+    if not (h.post_id and h.url and h.title and h.published):
+        return None, "not a phila.gov post page (no post id, URL, title or publish time)"
+    title, _, dept = h.title.rpartition(" | ")
+    if DEPARTMENT not in dept:
+        return None, f"not an Office of {DEPARTMENT} release ({dept or 'no department'})"
+    if not NOTICE_TITLE.search(title):
+        return None, f"not a road-closure notice: {title}"
+    try:
+        published = datetime.fromisoformat(h.published).strftime("%Y-%m-%d %H:%M:%S")   # already Philadelphia time
+    except ValueError:
+        return None, f"unreadable publish time {h.published!r}"
+    return Notice(id=int(h.post_id), title=title.strip(), published=published, updated_at=published[:10],
+                  url=h.url), ""
+
+
+def import_saved(paths: list[Path], folder: Path) -> FetchReport:
+    """File hand-saved notice pages (files, or folders of .htm/.html). A page whose notice is already
+    filed with the same text is unchanged; changed text files it again, dated today, as an edit."""
+    files = sorted(f for p in paths for f in ([p] if p.is_file() else p.glob("*.htm*")) if f.is_file())
+    index = _index(folder)
+    rep = FetchReport(notices=len(files))
+    for f in files:
+        page = f.read_text(encoding="utf-8", errors="replace")
+        n, why = notice_from_page(page)
+        if n is None:
+            rep.failed.append(f"{f.name}: {why}")
+            continue
         known = index.get(str(n.id))
-        if known and known["updated_at"] == n.updated_at and (folder / known["file"]).exists():
-            continue
-        try:
-            r = client.get(n.url)
-            r.raise_for_status()
-        except httpx.HTTPError as exc:
-            rep.failed.append(f"{n.url}: {exc}")
-            continue
+        if known and (folder / known["file"]).exists():
+            if (folder / known["file"]).read_text(encoding="utf-8", errors="replace") == page:
+                rep.unchanged.append(f.name)
+                continue
+            n.updated_at = datetime.now().strftime("%Y-%m-%d")
         n.file = _file_name(n)
-        (folder / n.file).write_text(r.text, encoding="utf-8")
-        index[str(n.id)] = {**n.__dict__, "fetched_at": datetime.now().isoformat(timespec="seconds")}
+        (folder / n.file).write_text(page, encoding="utf-8")
+        index[str(n.id)] = {**n.__dict__, "fetched_at": datetime.now().isoformat(timespec="seconds"),
+                            "saved_by_hand": f.name}
         rep.saved.append(n.file)
-    index_path.write_text(json.dumps(index, indent=1, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    if rep.saved:
+        _write_index(folder, index)
     return rep
 
 
