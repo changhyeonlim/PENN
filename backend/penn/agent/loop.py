@@ -517,9 +517,11 @@ def ask(question: str, ctx: Context, history: list[tuple[str, str]] | None = Non
     """Run one Ask PENN turn and return a cited answer. `ctx` holds the places and windows known so
     far and records which ones the answer searched; `history` is earlier (question, answer) pairs.
     `model` overrides settings.model_chat for this turn (the eval compares models with it)."""
+    route = chat_route(model)
+    if client is None and not settings.token_factory_api_key:
+        return Answer(UNAVAILABLE, route)    # no key: the map works, Ask PENN can't
     client = client or OpenAI(base_url=settings.token_factory_base_url, api_key=settings.token_factory_api_key,
                               max_retries=1)    # the default 2 retries would let one hung call take 3 timeouts
-    route = chat_route(model)
     messages = [{"role": "system", "content": SYSTEM}]
     for q, a in (history or [])[-HISTORY_TURNS:]:
         messages += [{"role": "user", "content": q}, {"role": "assistant", "content": _past(a)}]

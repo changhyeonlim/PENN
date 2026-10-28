@@ -1,5 +1,6 @@
 """The loop is tested with a fake client that replays scripted model replies,
 so no API key or network is needed."""
+import dataclasses
 import json
 from datetime import date, datetime
 from types import SimpleNamespace as NS
@@ -93,6 +94,12 @@ def test_made_up_citation_gets_one_rewrite(fake_tools):
     a = run(client)
     assert a.cited == ["lane_closures:2025-07887"]
     assert [c["kind"] for c in a.checks] == ["unknown_record"]       # the guard line says what was caught
+
+
+def test_without_a_key_ask_penn_says_unavailable(monkeypatch):
+    monkeypatch.setattr(loop, "settings", dataclasses.replace(loop.settings, token_factory_api_key=""))
+    a = loop.ask("Can I drive to Old City this weekend?", context())
+    assert a.text == loop.UNAVAILABLE and a.calls == []
 
 
 def test_a_clean_answer_has_nothing_sent_back(fake_tools):
