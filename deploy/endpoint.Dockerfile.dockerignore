@@ -1,0 +1,15 @@
+# For deploy/endpoint.Dockerfile. The image needs data/ and dumps/; this keeps out what it never reads.
+.git
+.env
+.env.*
+**/node_modules
+**/.next
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+frontend/tsconfig.tsbuildinfo
+# Daily lane-closure snapshots and exports: history the running site never reads.
+data/snapshots/*.geojson.gz
+data/exports
+# Saved City notice pages: the closures parsed from them are already in the database dumps.
+data/snapshots/phila_press

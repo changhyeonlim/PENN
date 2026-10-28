@@ -1,0 +1,2 @@
+# Shell scripts run inside Linux containers: a Windows checkout's CRLF would break their #! line.
+*.sh text eol=lf
