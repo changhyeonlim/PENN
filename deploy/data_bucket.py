@@ -13,9 +13,13 @@ those extracted files go to the bucket, never the sites' pages:
     python deploy/data_bucket.py pull        in the container (deploy/endpoint/refresh.sh, daily and at start):
                                              fetches what's new or changed, then runs the loaders for it
     python deploy/data_bucket.py push-usage  in the container, same schedule: the demo's usage log (data/usage,
-                                             written by backend/penn/guardrails.py) summarized per day, to usage/
+                                             written by backend/penn/guardrails.py) to usage/raw/, a summary per
+                                             day to usage/; day files older than PENN_USAGE_DAYS (30) are deleted
+                                             here and in the bucket, the summaries are kept
     python deploy/data_bucket.py usage [N]   on your PC: the last N days (default 7): questions, cache hits,
                                              refusals by reason, visitors, tokens and estimated cost
+    python deploy/data_bucket.py questions [DATE]
+                                             on your PC: one day's questions (default today, UTC), by visitor
 
 Settings, from the environment (on your PC, .env): PENN_BUCKET, PENN_S3_ENDPOINT (e.g.
 https://s3.us-east-1.amazonaws.com), PENN_S3_REGION, PENN_S3_KEY_ID, PENN_S3_SECRET. Without PENN_BUCKET both commands do nothing,
@@ -113,6 +117,8 @@ def pull() -> int:
 
 
 USAGE = ROOT / "data" / "usage"
+RAW = "usage/raw/"
+RETAIN_DAYS = int(os.getenv("PENN_USAGE_DAYS", "30"))
 # Token Factory list prices for Nemotron 3 Super, $ per 1M tokens (Oct 2026). The estimate ignores the cheaper
 # cached-input rate ($0.06), so it's an upper bound.
 PRICE_IN = float(os.getenv("PENN_PRICE_IN", "0.30"))
@@ -133,13 +139,45 @@ def _summary(day_file: Path) -> dict:
 
 
 def push_usage() -> int:
-    """Each day's summary (today's so far, too) to usage/<date>.json; re-sent each run, so it stays current."""
+    """Each day's log to usage/raw/<date>.jsonl and its summary to usage/<date>.json (today's so far, too; re-sent
+    each run, so they stay current). Logs past the retention are deleted from both places; summaries hold no
+    questions, so they stay."""
     import json
+    from datetime import datetime, timedelta, timezone
     s3, bucket = _bucket()
     if not s3 or not USAGE.exists():
         return 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=RETAIN_DAYS)).strftime("%Y-%m-%d")
     for f in sorted(USAGE.glob("*.jsonl")):
+        if f.stem < cutoff:
+            f.unlink()
+            continue
         s3.put_object(Bucket=bucket, Key=f"usage/{f.stem}.json", Body=json.dumps(_summary(f)).encode())
+        s3.upload_file(str(f), bucket, f"{RAW}{f.name}")
+    for key in _remote(s3, bucket, RAW):
+        if Path(key).stem < cutoff:
+            s3.delete_object(Bucket=bucket, Key=key)
+    return 0
+
+
+def questions(day: str = "") -> int:
+    import json
+    from datetime import datetime, timezone
+    s3, bucket = _bucket()
+    if not s3:
+        raise SystemExit("set PENN_BUCKET (and the PENN_S3_* settings) in .env first")
+    day = day or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        body = s3.get_object(Bucket=bucket, Key=f"{RAW}{day}.jsonl")["Body"].read().decode()
+    except s3.exceptions.NoSuchKey:
+        print(f"no questions logged on {day}")
+        return 0
+    rows = [json.loads(line) for line in body.splitlines() if line.strip()]
+    # One visitor's questions together, in order, so a conversation reads top to bottom.
+    for r in sorted(rows, key=lambda r: (r["view"], r["visitor"], r["at"])):
+        cost = r["tokens_in"] / 1e6 * PRICE_IN + r["tokens_out"] / 1e6 * PRICE_OUT
+        print(f"{r['at'][11:19]} {r['view']:4} {r['role']:7} {r['visitor']} {r['outcome']:10} {r['ms'] / 1000:>5.1f}s "
+              f"${cost:.3f}  {r.get('question', '')}")
     return 0
 
 
@@ -148,7 +186,7 @@ def usage(days: int = 7) -> int:
     s3, bucket = _bucket()
     if not s3:
         raise SystemExit("set PENN_BUCKET (and the PENN_S3_* settings) in .env first")
-    keys = sorted(_remote(s3, bucket, "usage/"))[-days:]
+    keys = sorted(k for k in _remote(s3, bucket, "usage/") if not k.startswith(RAW))[-days:]
     if not keys:
         print("no usage summaries yet")
         return 0
@@ -175,10 +213,13 @@ def create() -> int:
 
 
 if __name__ == "__main__":
-    commands = {"create": create, "upload": upload, "pull": pull, "push-usage": push_usage, "usage": usage}
+    commands = {"create": create, "upload": upload, "pull": pull, "push-usage": push_usage, "usage": usage,
+                "questions": questions}
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd not in commands:
         raise SystemExit(__doc__)
     if cmd == "usage" and len(sys.argv) > 2:
         raise SystemExit(usage(int(sys.argv[2])))
+    if cmd == "questions" and len(sys.argv) > 2:
+        raise SystemExit(questions(sys.argv[2]))
     raise SystemExit(commands[cmd]())

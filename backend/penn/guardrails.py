@@ -294,10 +294,11 @@ def store(key: str, response: dict) -> None:
 
 
 # ---- the usage log ----
-# One line per Ask PENN request, in data/usage/<UTC date>.jsonl: what happened and what it cost, never what was
-# asked (only its length) or who asked. Visitors appear as a keyed hash whose key is random and changes daily,
-# so a day's repeat visitors can be counted but no address can be recovered. deploy/data_bucket.py push-usage
-# turns finished days into summaries in the data bucket; `usage` prints them.
+# One line per Ask PENN request, in data/usage/<UTC date>.jsonl: what was asked, what happened and what it cost,
+# never who asked. Visitors appear as a keyed hash whose key is random and changes daily, so a day's questions
+# from one visitor can be read together but no address can be recovered. deploy/data_bucket.py push-usage sends
+# the day files and their summaries to the data bucket and drops days past its retention; `usage` prints the
+# summaries, `questions` a day's questions. The page's privacy note says so.
 
 _salt: dict[str, bytes] = {}
 
@@ -319,6 +320,7 @@ def record(ip: str, outcome: str, started: float, question: str = "", response: 
     calls = (response or {}).get("calls") or []
     row = {"at": now.isoformat(timespec="seconds"), "view": "demo" if settings.pinned_now else "live", "role": pool,
            "visitor": _visitor(ip, now.strftime("%Y-%m-%d")), "outcome": outcome, "chars": len(question),
+           "question": question[:MAX_QUESTION],
            "model_calls": len(calls), "tokens_in": sum(c.get("prompt_tokens") or 0 for c in calls),
            "tokens_out": sum(c.get("output_tokens") or 0 for c in calls),
            "ms": int((time.monotonic() - started) * 1000)}
