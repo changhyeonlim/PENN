@@ -37,12 +37,12 @@ checks each draft before you see it.
 
 | | |
 |---|---|
-| [The problem and the map](#the-problem-and-the-map) | [How NVIDIA Nemotron and Nebius are used](#how-nvidia-nemotron-and-nebius-are-used) |
-| [What an answer looks like](#what-an-answer-looks-like) | [Choosing the model](#choosing-the-model) |
-| [Try it: a demo script](#try-it-a-demo-script) | [Evaluation](#evaluation) |
-| [Architecture](#architecture) | [Run it locally](#run-it-locally) |
-| [Production deployment](#production-deployment) | [Data and licenses](#data-and-licenses) |
-| [Known limits and what's next](#known-limits-and-whats-next) | [Repository layout](#repository-layout) |
+| [The problem and the map](#the-problem-and-the-map) | [Production deployment](#production-deployment) |
+| [What an answer looks like](#what-an-answer-looks-like) | [Evaluation](#evaluation) |
+| [Try it: a demo script](#try-it-a-demo-script) | [Choosing the model](#choosing-the-model) |
+| [Architecture](#architecture) | [Known limits and what's next](#known-limits-and-whats-next) |
+| [How NVIDIA Nemotron and Nebius are used](#how-nvidia-nemotron-and-nebius-are-used) | [Data and licenses](#data-and-licenses) |
+| [Run it locally](#run-it-locally) | [Repository layout](#repository-layout) |
 
 ---
 
@@ -94,12 +94,12 @@ shape. The details stay on the map.
 
 | Part | Example from *"Can I drive to Old City this weekend?"* |
 |---|---|
-| **The opening line** | Getting there is normal, except for one thing: the Philly Bike Ride. |
-| **Happening there** | Concerts, games, festivals and listings, with times |
-| **Getting around** | <img src=".github/assets/swatch-event.svg" alt="purple"> The ride's closures, folded into one line from one City notice |
-| **Everything minor, as a count** | "Plus *n* smaller permits (lane work, loading zones, sidewalk work) are on the map." |
-| **Citations** | Every fact has a numbered chip. Click it and that exact record opens. |
-| **Hallucination guard** | How many citations were matched to records PENN retrieved, that the place and dates were worked out in code, and any draft that was sent back, with the reason |
+| **The opening line** | "Getting to Old City this weekend looks normal except for..." the crowds at two Arden Theatre shows and the Philly Bike Ride on Saturday, Oct 17. |
+| **What's on nearby** | The Arden Theatre shows on N 2nd St, each cited to its Ticketmaster listing |
+| **Getting around** | <img src=".github/assets/swatch-event.svg" alt="purple"> The ride's roadblocks on N 6th, 5th, Market and Race, from one City notice; <img src=".github/assets/swatch-construction.svg" alt="orange"> lane work on S 6th, Independence Mall, Market and Arch, and a full closure of Church St through the weekend |
+| **Everything minor, as a count** | "Plus 21 smaller permits (lane work, loading zones, sidewalk work) are on the map." |
+| **Citations** | Every fact has a numbered chip, 13 in this answer. Click one and that exact record opens. |
+| **Hallucination guard** | "13 citations, each matched to a record PENN retrieved; place and dates worked out in code." A draft that was sent back is listed here too, with the reason. |
 
 <table>
 <tr>
@@ -121,164 +121,6 @@ shape. The details stay on the map.
 | *What about the week after?* | A follow-up. The place carries over; only the time window changes. |
 | *Any concerts in Old City tonight?* | Listings, with duplicates matched across Ticketmaster and the local picks. |
 | *Is Camden closed tomorrow?* | Out of scope. PENN covers Philadelphia only, and says so. |
-
----
-
-## How NVIDIA Nemotron and Nebius are used
-
-### NVIDIA Nemotron 3 Super answers every question
-
-| What Nemotron does | What code does instead |
-|---|---|
-| Plans the turn with **six tools** (function calling) | Resolves places and dates and runs every search |
-| Gets back short handles: `p1` for "Old City", `w1` for "this weekend" | Keeps the hundreds of H3 cells and the computed weekdays on the server. A handle no tool issued is an error, so **the model can't invent a place or a date.** |
-| Writes the trip brief, citing `[id:…]` for every fact | Checks every cited ID against what the tools returned **that turn**, and sends a bad draft back once, with the reason |
-| Rewrites once if a check fails | Adds the sentences that must always appear ("permits list dates, not hours"). If the rewrite fails too, PENN says honestly that it can't answer. |
-
-Super has habits, and code handles them. It often writes `【id:…】` instead of `[id:…]`: only 52% of its
-citations came back in the requested format at first. A lenient parser reads its variants (and still
-rejects `[1]`), and the checks catch the rest. The code is in
-[`agent/loop.py`](backend/penn/agent/loop.py), [`agent/context.py`](backend/penn/agent/context.py) and
-[`agent/citations.py`](backend/penn/agent/citations.py).
-
-### Nebius
-
-**Token Factory is how PENN reaches Nemotron.** Every Ask PENN answer, and every eval run, is a request
-to Token Factory's OpenAI-compatible API for `nvidia/nemotron-3-super-120b-a12b`, sent with the stock
-`openai` Python client.
-
-**Where it sped up our work:** Token Factory serves many models behind the same API, so trying a different
-model meant changing one string. That's how we ran Nemotron 3.5 Lightning, Super and Ultra on the same
-questions before choosing Super ([Choosing the model](#choosing-the-model)).
-
-**Tavily** (by Nebius) is the web search PENN falls back on when its own records have nothing.
-
-**Hosting is not on Nebius.** We requested Nebius AI Cloud CPU (non-GPU vCPU) quota to run the app's
-container. It wasn't granted, and Nebius support suggested using other available resources, so the app
-runs on AWS EC2.
-
----
-
-## Choosing the model
-
-We chose with five questions, in this order:
-
-1. **Is it open?** PENN is built on NVIDIA's open Nemotron models.
-2. **Is it fast enough?** People ask PENN on their way out the door.
-3. **Does it get the facts right?**
-4. **Does it follow the citation and wording rules?**
-5. **What does a question cost?**
-
-### Within the Nemotron family
-
-On Oct 28 we ran all three sizes on the current agent, on the frozen city, through Token Factory.
-"Passed" counts the 52 questions outside trip briefs (see the note below).
-
-| | Nemotron 3.5 Lightning<br><sub>3B active / 30B</sub> | **Nemotron 3 Super** (PENN's model)<br><sub>12B active / 120B</sub> | Nemotron 3 Ultra<br><sub>55B active / 550B</sub> |
-|---|---|---|---|
-| Runs | 1 | 4 | 4 |
-| **Passed, of 52** | 22 (42%) | **41.0 (79%)**, range 40–42 | 38.25 (74%), range 38–39 |
-| Lookups, specific, multi-day, place | 67% | 85% | **92%** |
-| Negatives ("no record" is right) | 33% | **100%** | 62% |
-| Street history | **75%** | 66% | 66% |
-| Traps | 17% | **74%** | 67% |
-| Gave up honestly ("can't answer") | 34% | **under 1%** | 4% |
-| p50 / p90 answer time | 10.9 s / 26.7 s | **7.6 s / 16.4 s** | 8.0 s / 18.5 s |
-| Output tokens per answer | 962 | 1,062 | 2,333 |
-| Prompt tokens per answer | 148k | 21k | **20k** |
-| Model calls per answer | 5.3 | 2.8 | **2.4** |
-| Citations in the requested format | 97% | 79% (99% after parsing) | **99%** |
-| **Verdict** | Gives up on a third of questions, at 7× the prompt tokens | **Ships: most accurate and fastest of the three** | Better at plain lookups, but often answers where "no record" is right |
-
-**Ultra used to win; on the fixed agent it doesn't.** Before our fixes, Ultra passed more (30.25 against
-25.0 of 51 questions, four runs each), but its p90 was 33.4 s. On the fixed agent, Super passes more than
-Ultra, answers faster, and writes less than half the tokens. Its one weak spot is the citation format,
-which the parser absorbs.
-
-> **Note on trip briefs.** The answer key for the 6 trip-brief questions still expects the minor-permit
-> counts from Oct 18 ("Plus 74 smaller permits"). On Oct 21 we changed how minor permits are counted
-> (weeks-long lane work folds into one line, and work just outside a neighborhood is counted, not
-> briefed), so today's tools report "Plus 49". Every model now gives the new number and fails that one
-> fact, so trip briefs are left out of the comparison until the key is updated.
-
-### Against same-size models from other labs
-
-An earlier comparison: Oct 18–19, all 57 questions then in the set, one run each, on the agent as it was
-before the fixes above:
-
-| Model | Active / total | Passed | p50 / p90 | Citations in requested format | Drafts sent back |
-|---|---|---|---|---|---|
-| **NVIDIA Nemotron 3 Super** | 12B / 120B | 42/57 | 5.4 s / 8.2 s | 78% (100% after parsing) | 21% |
-| DeepSeek-V4-Flash-0731 | 13B / 284B | 55/57 | 3.5 s / 8.3 s | 100% | 4% |
-| Qwen3.5-397B-A17B | 17B / 397B | 47/57 | 9.9 s / 17.1 s | 100% | 5% |
-
-**How we read it.** DeepSeek-V4-Flash scores higher, and we say so. Breaking the results down by category
-shows where the gap is:
-
-| Category | Nemotron Super | DeepSeek-V4-Flash | Qwen3.5 |
-|---|---|---|---|
-| Lookups, negatives, specific, multi-day | 19/20 | 20/20 | 17/20 |
-| Street history | 6/8 | 7/8 | 6/8 |
-| Trip briefs | 5/6 | 6/6 | 6/6 |
-| Trap-tagged questions | 12/23 | 22/23 | 18/23 |
-
-Even then, Super was as good as its peers at the job itself, finding the right records. Its gap was
-almost entirely in *traps*, where the answer hinges on exact wording ("a permit is in effect", never "the
-street is closed"). Those rules can be fixed one at a time. On a hard 12-question subset, prompt fixes took
-Super from 6/12 to 10/12, and moving the last two rules into code took it to 12/12. Across the four Oct 28
-runs, Super passes 74% of trap questions, up from 52% (12/23) in this run. So we ship the open NVIDIA
-model, and keep closing the trap gap in code.
-
----
-
-## Evaluation
-
-**Scored by code, not by another LLM.** 58 questions run on a frozen copy of the city (Saturday,
-Oct 17, 2026, 10:00 a.m.), so an answer never fails just because a permit was filed later.
-
-| Question type | Count | A real question from the set |
-|---|---|---|
-| Lookups, specific, multi-day, place | 16 | *What street permits are in effect on the blocks at 13th and Locust on Saturday, October 10, 2026?* |
-| Negatives ("no record" is right) | 7 | *Is there a block party near 13th and Locust on Saturday, October 10, 2026?* |
-| Street history | 8 | *Was Broad Street closed at Snyder Avenue for the Broad Street Run this year?* |
-| Traps | 21 | *Is Spruce Street closed to cars at 1327 Spruce Street on Saturday, October 10, 2026?* A permit is in effect; that is not proof the street is closed. |
-| Trip briefs | 6 | *Rittenhouse next week* |
-
-The results tables count traps by tag, which gives 23: two non-trap questions also carry a trap tag.
-
-A question passes only if **all four** hold:
-
-1. The right tools were called.
-2. Every required fact appears.
-3. Every cited ID was really returned by a tool.
-4. No forbidden claim appears.
-
-![A check catching the model, from a saved Oct 28 run (question sp04): draft 1 cites an ID no tool returned, code sends it back with the reason, draft 2 cites the real record and passes](.github/assets/fig-caught.png)
-
-**A check catching the model, from a saved run.** Question sp04 asks *"Is there construction on the Ben
-Franklin Parkway near Logan Square on Wednesday, October 21, 2026?"* Super's first draft had the right
-permit but cited it as `【event_id:lane_closures:2026-17342】`, an ID no tool returned. Code sent it back
-with the reason, "cited a record PENN never retrieved". The rewrite cited `[id:lane_closures:2026-17342]`,
-and the eval scored it a pass. Across the Oct 28 runs, about **a quarter of Super's answers** were sent
-back like this, each by a check in code, before anyone would have read them.
-
-**Re-check our scores with no API key and no database.** Every saved answer keeps its full trace: tool
-calls, returned IDs, every draft, latency and tokens. After [steps 1 and 3](#run-it-locally):
-
-```bash
-cd backend
-# The Nemotron family on the current agent (Oct 25-28): Lightning, Super and Ultra
-python -m penn.eval --leaderboard ../eval/results/*.json
-# The earlier comparison with other labs' models (Oct 18-19)
-python -m penn.eval --leaderboard \
-  ../eval/baselines/super-penn_demo-2026-10-18-fixes.json \
-  ../eval/baselines/deepseek-v4-flash-penn_demo-2026-10-19.json \
-  ../eval/baselines/qwen3.5-397b-penn_demo-2026-10-19.json
-```
-
-Each prints its comparison table above. **Unit tests:** run `cd backend && python -m pytest -q`; 291 tests
-cover place resolution, intersections, time windows, impact tiers, citation parsing, the agent loop with
-a fake model, and every ingestion parser.
 
 ---
 
@@ -345,6 +187,41 @@ the system prompt. That halved the prompt at no measured cost.
   never the user's message.
 
 </details>
+
+---
+
+## How NVIDIA Nemotron and Nebius are used
+
+### NVIDIA Nemotron 3 Super answers every question
+
+| What Nemotron does | What code does instead |
+|---|---|
+| Plans the turn with **six tools** (function calling) | Resolves places and dates and runs every search |
+| Gets back short handles: `p1` for "Old City", `w1` for "this weekend" | Keeps the hundreds of H3 cells and the computed weekdays on the server. A handle no tool issued is an error, so **the model can't invent a place or a date.** |
+| Writes the trip brief, citing `[id:…]` for every fact | Checks every cited ID against what the tools returned **that turn**, and sends a bad draft back once, with the reason |
+| Rewrites once if a check fails | Adds the sentences that must always appear ("permits list dates, not hours"). If the rewrite fails too, PENN says honestly that it can't answer. |
+
+Super has habits, and code handles them. It often writes `【id:…】` instead of `[id:…]`: only 52% of its
+citations came back in the requested format at first. A lenient parser reads its variants (and still
+rejects `[1]`), and the checks catch the rest. The code is in
+[`agent/loop.py`](backend/penn/agent/loop.py), [`agent/context.py`](backend/penn/agent/context.py) and
+[`agent/citations.py`](backend/penn/agent/citations.py).
+
+### Nebius
+
+**Token Factory is how PENN reaches Nemotron.** Every Ask PENN answer, and every eval run, is a request
+to Token Factory's OpenAI-compatible API for `nvidia/nemotron-3-super-120b-a12b`, sent with the stock
+`openai` Python client.
+
+**Where it sped up our work:** Token Factory serves many models behind the same API, so trying a different
+model meant changing one string. That's how we ran Nemotron 3.5 Lightning, Super and Ultra on the same
+questions before choosing Super ([Choosing the model](#choosing-the-model)).
+
+**Tavily** (by Nebius) is the web search PENN falls back on when its own records have nothing.
+
+**Hosting is not on Nebius.** We requested Nebius AI Cloud CPU (non-GPU vCPU) quota to run the app's
+container. It wasn't granted, and Nebius support suggested using other available resources, so the app
+runs on AWS EC2.
 
 ---
 
@@ -480,20 +357,128 @@ from the builder's local ClickHouse.
 
 ---
 
-## Data and licenses
+## Evaluation
 
-| Source | Live demo | Local sample | How it arrives | License / terms |
-|---|---|---|---|---|
-| <img src=".github/assets/swatch-construction.svg" alt="orange"> City Street Lane Closures (ArcGIS) | 4,389 permits | 1,483 | Daily API load | City of Philadelphia open data |
-| <img src=".github/assets/swatch-event.svg" alt="purple"> City Office of Special Events notices | 2,097 closures (2016–2026), 1,481 on the map | 1,843, 1,239 on the map | Saved by hand from phila.gov, parsed, matched to the centerline | City of Philadelphia public notices |
-| Ticketmaster Discovery API | 610 events | 15 made up | Daily API load | Ticketmaster terms; not redistributed |
-| visitphilly.com weekly picks | 38 events | 15 made up | Saved by hand weekly, parsed offline | visitphilly.com terms; not redistributed |
-| Named event series | 38, with aliases | same | Curated; a source URL for every edition | this project |
-| Places | Neighborhoods, 112 landmarks, street centerline | same | City open data | City open data; neighborhood outlines © Robert Cheetham, CC BY 4.0 |
+**Scored by code, not by another LLM.** 58 questions run on a frozen copy of the city (Saturday,
+Oct 17, 2026, 10:00 a.m.), so an answer never fails just because a permit was filed later.
 
-[`deploy/make_sample.sh`](deploy/make_sample.sh) builds the sample archive from a local copy of the full
-frozen city. Every record is placed on H3 resolution-9 cells (about a block group) and matched to the
-City's street segment IDs, so a search at a corner catches the right blocks.
+| Question type | Count | A real question from the set |
+|---|---|---|
+| Lookups, specific, multi-day, place | 16 | *What street permits are in effect on the blocks at 13th and Locust on Saturday, October 10, 2026?* |
+| Negatives ("no record" is right) | 7 | *Is there a block party near 13th and Locust on Saturday, October 10, 2026?* |
+| Street history | 8 | *Was Broad Street closed at Snyder Avenue for the Broad Street Run this year?* |
+| Traps | 21 | *Is Spruce Street closed to cars at 1327 Spruce Street on Saturday, October 10, 2026?* A permit is in effect; that is not proof the street is closed. |
+| Trip briefs | 6 | *Rittenhouse next week* |
+
+The results tables below count traps by tag, which gives 23: two non-trap questions also carry a trap tag.
+
+A question passes only if **all four** hold:
+
+1. The right tools were called.
+2. Every required fact appears.
+3. Every cited ID was really returned by a tool.
+4. No forbidden claim appears.
+
+<p align="center">
+  <img src=".github/assets/fig-caught.png" alt="A check catching the model, from a saved Oct 28 run (question sp04): draft 1 cites an ID no tool returned, code sends it back with the reason, draft 2 cites the real record and passes" width="640">
+</p>
+
+**A check catching the model, from a saved run.** Question sp04 asks *"Is there construction on the Ben
+Franklin Parkway near Logan Square on Wednesday, October 21, 2026?"* Super's first draft had the right
+permit but cited it as `【event_id:lane_closures:2026-17342】`, an ID no tool returned. Code sent it back
+with the reason, "cited a record PENN never retrieved". The rewrite cited `[id:lane_closures:2026-17342]`,
+and the eval scored it a pass. Across the Oct 28 runs, about **a quarter of Super's answers** were sent
+back like this, each by a check in code, before anyone would have read them.
+
+**Re-check our scores with no API key and no database.** Every saved answer keeps its full trace: tool
+calls, returned IDs, every draft, latency and tokens. After [steps 1 and 3](#run-it-locally):
+
+```bash
+cd backend
+# The Nemotron family on the current agent (Oct 25-28): Lightning, Super and Ultra
+python -m penn.eval --leaderboard ../eval/results/*.json
+# The earlier comparison with other labs' models (Oct 18-19)
+python -m penn.eval --leaderboard \
+  ../eval/baselines/super-penn_demo-2026-10-18-fixes.json \
+  ../eval/baselines/deepseek-v4-flash-penn_demo-2026-10-19.json \
+  ../eval/baselines/qwen3.5-397b-penn_demo-2026-10-19.json
+```
+
+Each prints its comparison table in [Choosing the model](#choosing-the-model). **Unit tests:** run `cd backend && python -m pytest -q`; 291 tests
+cover place resolution, intersections, time windows, impact tiers, citation parsing, the agent loop with
+a fake model, and every ingestion parser.
+
+---
+
+## Choosing the model
+
+We chose with five questions, in this order:
+
+1. **Is it open?** PENN is built on NVIDIA's open Nemotron models.
+2. **Is it fast enough?** People ask PENN on their way out the door.
+3. **Does it get the facts right?**
+4. **Does it follow the citation and wording rules?**
+5. **What does a question cost?**
+
+### Within the Nemotron family
+
+On Oct 28 we ran all three sizes on the current agent, on the frozen city, through Token Factory.
+"Passed" counts the 52 questions outside trip briefs (see the note below).
+
+| | Nemotron 3.5 Lightning<br><sub>3B active / 30B</sub> | **Nemotron 3 Super** (PENN's model)<br><sub>12B active / 120B</sub> | Nemotron 3 Ultra<br><sub>55B active / 550B</sub> |
+|---|---|---|---|
+| Runs | 1 | 4 | 4 |
+| **Passed, of 52** | 22 (42%) | **41.0 (79%)**, range 40–42 | 38.25 (74%), range 38–39 |
+| Lookups, specific, multi-day, place | 67% | 85% | **92%** |
+| Negatives ("no record" is right) | 33% | **100%** | 62% |
+| Street history | **75%** | 66% | 66% |
+| Traps | 17% | **74%** | 67% |
+| Gave up honestly ("can't answer") | 34% | **under 1%** | 4% |
+| p50 / p90 answer time | 10.9 s / 26.7 s | **7.6 s / 16.4 s** | 8.0 s / 18.5 s |
+| Output tokens per answer | 962 | 1,062 | 2,333 |
+| Prompt tokens per answer | 148k | 21k | **20k** |
+| Model calls per answer | 5.3 | 2.8 | **2.4** |
+| Citations in the requested format | 97% | 79% (99% after parsing) | **99%** |
+| **Verdict** | Gives up on a third of questions, at 7× the prompt tokens | **Ships: most accurate and fastest of the three** | Better at plain lookups, but often answers where "no record" is right |
+
+**Ultra used to win; on the fixed agent it doesn't.** Before our fixes, Ultra passed more (30.25 against
+25.0 of 51 questions, four runs each), but its p90 was 33.4 s. On the fixed agent, Super passes more than
+Ultra, answers faster, and writes less than half the tokens. Its one weak spot is the citation format,
+which the parser absorbs.
+
+> **Note on trip briefs.** The answer key for the 6 trip-brief questions still expects the minor-permit
+> counts from Oct 18 ("Plus 74 smaller permits"). On Oct 21 we changed how minor permits are counted
+> (weeks-long lane work folds into one line, and work just outside a neighborhood is counted, not
+> briefed), so today's tools report "Plus 49". Every model now gives the new number and fails that one
+> fact, so trip briefs are left out of the comparison until the key is updated.
+
+### Against same-size models from other labs
+
+An earlier comparison: Oct 18–19, all 57 questions then in the set, one run each, on the agent as it was
+before the fixes above:
+
+| Model | Active / total | Passed | p50 / p90 | Citations in requested format | Drafts sent back |
+|---|---|---|---|---|---|
+| **NVIDIA Nemotron 3 Super** | 12B / 120B | 42/57 | 5.4 s / 8.2 s | 78% (100% after parsing) | 21% |
+| DeepSeek-V4-Flash-0731 | 13B / 284B | 55/57 | 3.5 s / 8.3 s | 100% | 4% |
+| Qwen3.5-397B-A17B | 17B / 397B | 47/57 | 9.9 s / 17.1 s | 100% | 5% |
+
+**How we read it.** DeepSeek-V4-Flash scores higher, and we say so. Breaking the results down by category
+shows where the gap is:
+
+| Category | Nemotron Super | DeepSeek-V4-Flash | Qwen3.5 |
+|---|---|---|---|
+| Lookups, negatives, specific, multi-day | 19/20 | 20/20 | 17/20 |
+| Street history | 6/8 | 7/8 | 6/8 |
+| Trip briefs | 5/6 | 6/6 | 6/6 |
+| Trap-tagged questions | 12/23 | 22/23 | 18/23 |
+
+Even then, Super was as good as its peers at the job itself, finding the right records. Its gap was
+almost entirely in *traps*, where the answer hinges on exact wording ("a permit is in effect", never "the
+street is closed"). Those rules can be fixed one at a time. On a hard 12-question subset, prompt fixes took
+Super from 6/12 to 10/12, and moving the last two rules into code took it to 12/12. Across the four Oct 28
+runs, Super passes 74% of trap questions, up from 52% (12/23) in this run. So we ship the open NVIDIA
+model, and keep closing the trap gap in code.
 
 ---
 
@@ -513,6 +498,23 @@ City's street segment IDs, so a search at a corner catches the right blocks.
 
 **Next:** alerts ("tell me if anything closes near my block this weekend"), and more cities. Nothing in
 PENN is Philadelphia-specific except its sources.
+
+---
+
+## Data and licenses
+
+| Source | Live demo | Local sample | How it arrives | License / terms |
+|---|---|---|---|---|
+| <img src=".github/assets/swatch-construction.svg" alt="orange"> City Street Lane Closures (ArcGIS) | 4,389 permits | 1,483 | Daily API load | City of Philadelphia open data |
+| <img src=".github/assets/swatch-event.svg" alt="purple"> City Office of Special Events notices | 2,097 closures (2016–2026), 1,481 on the map | 1,843, 1,239 on the map | Saved by hand from phila.gov, parsed, matched to the centerline | City of Philadelphia public notices |
+| Ticketmaster Discovery API | 610 events | 15 made up | Daily API load | Ticketmaster terms; not redistributed |
+| visitphilly.com weekly picks | 38 events | 15 made up | Saved by hand weekly, parsed offline | visitphilly.com terms; not redistributed |
+| Named event series | 38, with aliases | same | Curated; a source URL for every edition | this project |
+| Places | Neighborhoods, 112 landmarks, street centerline | same | City open data | City open data; neighborhood outlines © Robert Cheetham, CC BY 4.0 |
+
+[`deploy/make_sample.sh`](deploy/make_sample.sh) builds the sample archive from a local copy of the full
+frozen city. Every record is placed on H3 resolution-9 cells (about a block group) and matched to the
+City's street segment IDs, so a search at a corner catches the right blocks.
 
 ---
 
